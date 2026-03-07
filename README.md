@@ -268,6 +268,7 @@ For issues and questions:
 
 ---
 
-**Made with ❤️ by [Sarthak Maheshwari](https://github.com/Sarthak1Developer)
+**Made with ❤️ by [Sarthak Maheshwari](https://github.com/Sarthak1Developer)**
+
 IntentWatch - AI Security Surveillance System
-for surveillance and security applications**
+for surveillance and security applications
