@@ -26,6 +26,7 @@ interface Zone {
 }
 
 const ZONES_STORAGE_KEY = 'intentwatch.zones.v1';
+const NORMALIZED_ZONES_STORAGE_KEY = 'intentwatch.zones.normalized.v1';
 
 const DEFAULT_ZONES: Zone[] = [
   {
@@ -88,6 +89,25 @@ function loadZonesFromStorage(): Zone[] {
 function saveZonesToStorage(zones: Zone[]) {
   try {
     window.localStorage.setItem(ZONES_STORAGE_KEY, JSON.stringify(zones));
+  } catch {
+    // ignore
+  }
+}
+
+function saveNormalizedZonesToStorage(zones: Zone[], previewSize: { width: number; height: number } | null) {
+  try {
+    if (!previewSize || previewSize.width <= 0 || previewSize.height <= 0) return;
+    const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+    const normalized = zones.map((z) => ({
+      id: z.id,
+      name: z.name,
+      severity: z.severity,
+      x: clamp01(z.x / previewSize.width),
+      y: clamp01(z.y / previewSize.height),
+      width: clamp01(z.width / previewSize.width),
+      height: clamp01(z.height / previewSize.height),
+    }));
+    window.localStorage.setItem(NORMALIZED_ZONES_STORAGE_KEY, JSON.stringify(normalized));
   } catch {
     // ignore
   }
@@ -202,6 +222,7 @@ export function ZoneConfig() {
   // Persist zones so they don't reset when navigating between tabs.
   useEffect(() => {
     saveZonesToStorage(zones);
+    saveNormalizedZonesToStorage(zones, getPreviewSize());
   }, [zones]);
 
   return (

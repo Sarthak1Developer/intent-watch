@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import video, alerts
+from api.routes import video, alerts, metrics
 
 # ✅ FIRST create the app
 app = FastAPI(
@@ -26,6 +26,7 @@ app.add_middleware(
 # ✅ THEN register routes
 app.include_router(video.router, prefix="/video", tags=["Video"])
 app.include_router(alerts.router, prefix="/alerts", tags=["Alerts"])
+app.include_router(metrics.router, tags=["Metrics"])
 
 @app.get("/")
 def root():

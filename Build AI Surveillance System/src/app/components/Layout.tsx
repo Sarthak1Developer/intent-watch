@@ -1,5 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
+import { alertsAPI } from '../../services/api';
+import { ensureNotificationPermissionNonBlocking, notifyAlert } from '../../services/alertNotifications';
 import { 
   LayoutDashboard, 
   Video, 
@@ -28,6 +30,34 @@ export function Layout({ children }: { children: React.ReactNode }) {
   // Theme is fixed: Dark UI + Purple brand color.
   const [themeColor] = useState<ThemeColor>('purple');
   const [uiMode] = useState<UiMode>('dark');
+
+  // Global: poll alerts and send OS notifications.
+  // This makes notifications work from Dashboard/Analytics/etc (not just Live Feed).
+  useEffect(() => {
+    ensureNotificationPermissionNonBlocking();
+
+    let mounted = true;
+
+    const tick = async () => {
+      try {
+        const data = await alertsAPI.getLiveAlerts();
+        if (!mounted) return;
+        const next = Array.isArray(data) ? data : [];
+        for (const a of next) {
+          notifyAlert(a);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    void tick();
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     // Best-effort: keep stored preferences aligned with the fixed UI.

@@ -36,6 +36,10 @@ build/
 logs/
 *.log
 
+# Training / evaluation outputs (can be large)
+/runs/
+/runs_weapon/
+
 # Local databases
 *.db
 *.sqlite
@@ -45,6 +49,12 @@ logs/
 /data/videos/
 /backend/data/videos/
 /backend/backend/data/videos/
+
+# Datasets (keep out of git)
+/weapon detection.v1i.yolov8/
+
+# Local model weights copied into workspace root (backend has its own)
+/yolov8n.pt
 
 # OS junk
 .DS_Store

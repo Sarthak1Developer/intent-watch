@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { mockStats, generateActivityData, generateAlertDistribution, generateMockAlerts } from '../data/mockData';
 import { Badge } from '../components/ui/badge';
-import { alertsAPI, AnalyticsData } from '../../services/api';
+import { alertsAPI, AnalyticsData, systemAPI } from '../../services/api';
 
 const StatCard = ({ icon: Icon, label, value, trend, color }: any) => (
   <Card className="p-6">
@@ -36,6 +36,7 @@ const StatCard = ({ icon: Icon, label, value, trend, color }: any) => (
 export function Dashboard() {
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [hasLoadedAnalytics, setHasLoadedAnalytics] = useState(false);
+  const [metrics, setMetrics] = useState<any | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -53,6 +54,26 @@ export function Dashboard() {
 
     refresh();
     const interval = window.setInterval(refresh, 5000);
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const refresh = async () => {
+      try {
+        const data = await systemAPI.getMetrics();
+        if (!isMounted) return;
+        setMetrics(data);
+      } catch {
+        // ignore
+      }
+    };
+
+    refresh();
+    const interval = window.setInterval(refresh, 2000);
     return () => {
       isMounted = false;
       window.clearInterval(interval);
@@ -131,26 +152,26 @@ export function Dashboard() {
         <StatCard
           icon={Users}
           label="People Detected"
-          value={mockStats.peopleDetected}
+          value={metrics?.people_detected ?? mockStats.peopleDetected}
           trend="+12% from last hour"
           color="bg-purple-600"
         />
         <StatCard
           icon={AlertTriangle}
           label="Active Alerts"
-          value={hasLoadedAnalytics ? (analytics?.total ?? 0) : mockStats.activeAlerts}
+          value={(metrics?.active_alerts ?? (hasLoadedAnalytics ? (analytics?.total ?? 0) : null)) ?? mockStats.activeAlerts}
           color="bg-red-600"
         />
         <StatCard
           icon={Video}
           label="Cameras Online"
-          value={mockStats.camerasOnline}
+          value={metrics?.cameras_online ?? mockStats.camerasOnline}
           color="bg-green-600"
         />
         <StatCard
           icon={Activity}
           label="System Uptime"
-          value={mockStats.uptime}
+          value={metrics?.uptime ?? mockStats.uptime}
           color="bg-blue-600"
         />
       </div>

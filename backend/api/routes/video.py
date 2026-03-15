@@ -7,21 +7,11 @@ from pathlib import Path
 import os
 import shutil
 import time
-import threading
 import uuid
-from typing import TypedDict
 import cv2
-from ultralytics import YOLO
-from api.routes.alerts import add_alert
+from api.stream_manager import NormalizedZone, StreamManager
 
 router = APIRouter()
-
-# Disable FFmpeg threading to avoid codec errors
-os.environ.setdefault("FFREPORT", "file=/dev/null")
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "threads;1")
-
-# Limit OpenCV internal threading to reduce race conditions
-cv2.setNumThreads(1)
 
 # ---------------- PATHS / CONFIG ----------------
 BACKEND_DIR = Path(__file__).resolve().parents[2]  # .../backend
@@ -32,33 +22,23 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
 MODEL_CANDIDATES = [BACKEND_DIR / "yolov8n.pt"]
 
-LOITER_THRESHOLD = 5        # seconds (reduced for faster detection)
-BAG_THRESHOLD = 5           # seconds (reduced for faster detection)  
-PERSON_BAG_DISTANCE = 150   # pixels
-RUNNING_SPEED_THRESHOLD = 120  # pixels per second (high threshold for actual running)
-RUNNING_ACCELERATION_THRESHOLD = 60  # px/s² (large speed increase needed)
 
-# Global thread lock for thread-safe operations
-stream_lock = threading.Lock()
+def _weapon_model_candidates() -> list[Path]:
+    # Optional second model dedicated to weapons.
+    # If provided, any detection from this model will be treated as a Weapon alert.
+    env_path = os.getenv("INTENTWATCH_WEAPON_MODEL_PATH")
 
-# ---------------- GLOBAL STATE ----------------
-class VideoSourceState(TypedDict):
-    mode: str | None
-    path: str | int | None
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
 
+    # Default to the known training output location used by this repo.
+    candidates.append(WORKSPACE_DIR / "runs_weapon" / "weapon80_20" / "weights" / "best.pt")
+    return candidates
 
-current_video_source: VideoSourceState = {"mode": None, "path": None}
-cap = None
-stream_generation = 0  # increments whenever we stop/switch sources to cancel old streams
-
-person_start_time = None
-bag_start_time = None
-person_positions = {}  # Track person positions for speed calculation
-person_speed_history = {}  # Track speed history for acceleration detection
-frame_count = 0
-last_frame_time = time.time()
-
-model = None
+# ---------------- STREAM MANAGER ----------------
+PRIMARY_STREAM_ID = "primary"
+manager = StreamManager(MODEL_CANDIDATES, _weapon_model_candidates())
 
 
 class StartCameraRequest(BaseModel):
@@ -67,6 +47,19 @@ class StartCameraRequest(BaseModel):
 
 class StartVideoRequest(BaseModel):
     source: str
+
+
+class StartStreamRequest(BaseModel):
+    stream_id: str
+    source: str
+
+
+class StopStreamRequest(BaseModel):
+    stream_id: str
+
+
+class ZonesRequest(BaseModel):
+    zones: list[dict]
 
 
 def _safe_filename(name: str) -> str:
@@ -83,59 +76,11 @@ def _unique_upload_path(original_filename: str) -> Path:
     suffix = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     return VIDEO_DIR / f"{stem}_{suffix}{ext}"
 
-def open_capture(source):
-    if isinstance(source, int) and os.name == "nt":
+
+def _open_capture_for_validation(source: int):
+    if os.name == "nt":
         return cv2.VideoCapture(source, cv2.CAP_DSHOW)
-    # For file paths / rtsp URLs, CAP_FFMPEG can be flaky on some Windows builds.
-    # Try FFmpeg first, then fall back to OpenCV's default backend.
-    cap_try = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-    if cap_try.isOpened():
-        return cap_try
-
-    try:
-        cap_try.release()
-    except Exception:
-        pass
-
     return cv2.VideoCapture(source)
-
-
-def reset_stream_state():
-    global cap, stream_generation, person_start_time, bag_start_time, person_positions, person_speed_history, frame_count, last_frame_time
-    # Bump generation first so any in-flight stream generators exit quickly.
-    stream_generation += 1
-    if cap:
-        try:
-            cap.release()
-        except Exception:
-            pass
-        cap = None
-    person_start_time = None
-    bag_start_time = None
-    person_positions = {}
-    person_speed_history = {}
-    frame_count = 0
-    last_frame_time = time.time()
-
-def get_model():
-    """Lazy load YOLO model"""
-    global model
-    try:
-        if model is None:
-            model_path = next((p for p in MODEL_CANDIDATES if p.exists()), None)
-            if model_path is None:
-                raise FileNotFoundError(
-                    "YOLO model file not found. Expected one of: "
-                    + ", ".join(str(p) for p in MODEL_CANDIDATES)
-                )
-
-            print(f"Loading YOLO model from: {model_path}")
-            model = YOLO(str(model_path))
-            print("YOLO model loaded successfully")
-        return model
-    except Exception as e:
-        print(f"ERROR loading YOLO model: {str(e)}")
-        raise
 
 # ---------------- API ENDPOINTS ----------------
 
@@ -172,9 +117,10 @@ def upload_video(file: UploadFile = File(...)):
         # Some codecs/containers can cause VideoCapture to hang on Windows.
         # Streaming will surface an error if the codec is unsupported.
         
-        reset_stream_state()
         abs_path = str(file_path.resolve())
-        current_video_source.update({"mode": "file", "path": abs_path})
+
+        # Selecting/uploading a file becomes the primary stream source.
+        manager.start(PRIMARY_STREAM_ID, abs_path, mode="file")
         
         print(f"✓ Video uploaded successfully: {abs_path}")
         return {"message": "Video uploaded successfully", "path": abs_path, "filename": file.filename}
@@ -191,14 +137,13 @@ def start_camera(body: StartCameraRequest | None = None):
     try:
         device_id = 0 if body is None else int(body.device_id)
         # Test camera access first
-        test_cap = open_capture(device_id)
+        test_cap = _open_capture_for_validation(device_id)
         if not test_cap.isOpened():
             test_cap.release()
             raise HTTPException(status_code=500, detail="Camera not available or already in use")
         test_cap.release()
-        
-        reset_stream_state()
-        current_video_source.update({"mode": "camera", "path": device_id})
+
+        manager.start(PRIMARY_STREAM_ID, device_id, mode="camera")
         print("✓ Camera selected successfully")
         return {"message": "Live camera selected", "device_id": device_id}
     except Exception as e:
@@ -234,7 +179,7 @@ def start_video(body: StartVideoRequest):
         # - Camera devices: validate by attempting to open (fast failure if device busy).
         # - File paths / URLs: do NOT open with OpenCV here (can hang on some codecs on Windows).
         if isinstance(source, int):
-            test_cap = open_capture(source)
+            test_cap = _open_capture_for_validation(source)
             if not test_cap.isOpened():
                 try:
                     test_cap.release()
@@ -247,9 +192,10 @@ def start_video(body: StartVideoRequest):
             if os.path.exists(str(source)) is False and ("://" not in str(source)):
                 raise HTTPException(status_code=404, detail="Video file not found")
 
-        reset_stream_state()
-        current_video_source.update(
-            {"mode": "camera" if isinstance(source, int) else "file", "path": source}
+        manager.start(
+            PRIMARY_STREAM_ID,
+            source,
+            mode=("camera" if isinstance(source, int) else "file"),
         )
         return {"message": "Video source selected", "source": source_raw}
     except HTTPException:
@@ -260,10 +206,8 @@ def start_video(body: StartVideoRequest):
 @router.post("/stop")
 def stop_video():
     """Stop video stream"""
-    global cap, current_video_source
     try:
-        reset_stream_state()
-        current_video_source.update({"mode": None, "path": None})
+        manager.stop(PRIMARY_STREAM_ID)
         print("✓ Video stream stopped")
         return {"message": "Video stream stopped"}
     except Exception as e:
@@ -272,285 +216,215 @@ def stop_video():
 
 @router.get("/status")
 def video_status():
-    return current_video_source
+    # Backward-compatible shape: include mode/path, plus a running bit.
+    return manager.get_status(PRIMARY_STREAM_ID)
 
-# ---------------- STREAM + INTENT ----------------
 
-def frame_generator(source, generation: int):
-    global cap, stream_generation, person_start_time, bag_start_time, person_positions, person_speed_history, frame_count, last_frame_time
+@router.get("/streams")
+def list_streams():
+    """List active streams (including primary if running)."""
+    ids = manager.list_streams()
+    return {"streams": [{"id": sid, **manager.get_status(sid)} for sid in ids]}
 
-    frames_processed = 0
-    fps_limit = 30
-    
-    cap_local = None
 
+@router.post("/streams/start")
+def start_stream(body: StartStreamRequest):
+    if body is None or not body.stream_id or not body.source:
+        raise HTTPException(status_code=400, detail="Missing stream_id or source")
+
+    stream_id = str(body.stream_id).strip()
+    if not stream_id:
+        raise HTTPException(status_code=400, detail="Invalid stream_id")
+
+    source_raw = str(body.source).strip()
     try:
-        # Disable threading to avoid FFmpeg codec issues
-        cap_local = open_capture(source)
-        cap = cap_local
+        # camera device ids can be numeric
+        try:
+            source: int | str = int(source_raw)
+        except Exception:
+            source = source_raw
 
-        if isinstance(source, int) and cap_local is not None:
-            cap_local.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Single buffer for camera
-        elif cap_local is not None:
-            # Disable multithreading for file reading
-            cap_local.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        if isinstance(source, int):
+            test_cap = _open_capture_for_validation(source)
+            if not test_cap.isOpened():
+                try:
+                    test_cap.release()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=500, detail="Camera not available")
+            test_cap.release()
+        else:
+            if os.path.exists(str(source)) is False and ("://" not in str(source)):
+                raise HTTPException(status_code=404, detail="Video file not found")
 
-        if cap_local is None or not cap_local.isOpened():
-            print(f"✗ Failed to open: {source}")
-            return
+        manager.start(stream_id, source, mode=("camera" if isinstance(source, int) else "file"))
+        return {"message": "Stream started", "stream_id": stream_id, "source": source_raw}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Start error: {str(e)}")
 
-        print(f"✓ Video source opened: {source}")
-        detection_model = get_model()
 
+@router.post("/streams/stop")
+def stop_stream(body: StopStreamRequest):
+    if body is None or not body.stream_id:
+        raise HTTPException(status_code=400, detail="Missing stream_id")
+    stream_id = str(body.stream_id).strip()
+    manager.stop(stream_id)
+    return {"message": "Stream stopped", "stream_id": stream_id}
+
+
+@router.get("/status/{stream_id}")
+def stream_status(stream_id: str):
+    return manager.get_status(str(stream_id))
+
+
+@router.post("/zones/{stream_id}")
+def set_zones_for_stream(stream_id: str, body: ZonesRequest):
+    raw = body.zones if body and body.zones else []
+
+    def to_float(v, default: float | None = None) -> float | None:
+        if v is None:
+            return default
+        try:
+            return float(v)
+        except Exception:
+            return default
+
+    zones: list[NormalizedZone] = []
+    for z in raw:
+        try:
+            x = to_float(z.get("x"))
+            y = to_float(z.get("y"))
+            w = to_float(z.get("width"))
+            h = to_float(z.get("height"))
+            if x is None or y is None or w is None or h is None:
+                continue
+            zones.append(
+                NormalizedZone(
+                    id=str(z.get("id")),
+                    name=str(z.get("name")),
+                    severity=str(z.get("severity")) if z.get("severity") is not None else "medium",
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                )
+            )
+        except Exception:
+            continue
+
+    manager.set_zones(str(stream_id), zones)
+    return {"message": "Zones updated", "count": len(zones), "stream_id": str(stream_id)}
+
+
+@router.post("/zones")
+def set_zones(body: ZonesRequest):
+    """Set normalized zones for the primary stream.
+
+    Zones are expected to be normalized floats in [0,1] relative to the frame.
+    """
+    def to_float(v, default: float | None = None) -> float | None:
+        if v is None:
+            return default
+        try:
+            return float(v)
+        except Exception:
+            return default
+
+    raw = body.zones if body and body.zones else []
+    zones: list[NormalizedZone] = []
+    for z in raw:
+        try:
+            x = to_float(z.get("x"))
+            y = to_float(z.get("y"))
+            w = to_float(z.get("width"))
+            h = to_float(z.get("height"))
+            if x is None or y is None or w is None or h is None:
+                continue
+            zones.append(
+                NormalizedZone(
+                    id=str(z.get("id")),
+                    name=str(z.get("name")),
+                    severity=str(z.get("severity")) if z.get("severity") is not None else "medium",
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                )
+            )
+        except Exception:
+            continue
+
+    manager.set_zones(PRIMARY_STREAM_ID, zones)
+    return {"message": "Zones updated", "count": len(zones)}
+
+# ---------------- STREAM ----------------
+
+
+def _mjpeg_generator(stream_id: str):
+    """Yield MJPEG frames from a running StreamWorker."""
+    last_ts: float | None = None
+    stall_started = time.time()
+    try:
         while True:
-            try:
-                # Cancel this generator if a new source was selected or stream was stopped.
-                if generation != stream_generation:
-                    break
-
-                ret, frame = cap_local.read()
-                if not ret or frame is None:
-                    if isinstance(source, str):
-                        # Loop file video back to start.
-                        cap_local.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, frame = cap_local.read()
-                        if not ret or frame is None:
-                            break
-                    else:
-                        break
-
-                # Resize frame if too large
-                h, w = frame.shape[:2]
-                if h > 720:
-                    scale = 720 / h
-                    w = int(w * scale)
-                    frame = cv2.resize(frame, (w, 720), interpolation=cv2.INTER_LINEAR)
-
-                frames_processed += 1
-
-                # Run YOLO detection
-                with stream_lock:
-                    results = detection_model(frame, conf=0.4, verbose=False)
-
-                persons = []
-                bags = []
-
-                # Process detections
-                for r in results:
-                    for box in r.boxes:
-                        cls = int(box.cls[0])
-                        label = detection_model.names[cls]
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        cx = (x1 + x2) // 2
-                        cy = (y1 + y2) // 2
-
-                        if label == "person":
-                            persons.append((x1, y1, x2, y2, cx, cy))
-                        elif label in ["backpack", "handbag", "suitcase", "bag"]:
-                            bags.append((x1, y1, x2, y2))
-
-                        # Draw non-person objects immediately. Person labels are drawn
-                        # after we assign a stable per-frame tracking id.
-                        if label in ["backpack", "handbag", "suitcase"]:
-                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            cv2.putText(
-                                frame,
-                                label,
-                                (x1, y1 - 8),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.6,
-                                (0, 255, 0),
-                                2,
-                            )
-
-                # ---- RUNNING DETECTION (Improved) ----
-                now = time.time()
-                running_persons = set()
-
-                # Snapshot previous positions so pid assignment is stable within this frame.
-                prev_positions = dict(person_positions)
-                used_pids = set()
-                person_ids_by_index: dict[int, int] = {}
-                
-                for i, (x1, y1, x2, y2, cx, cy) in enumerate(persons):
-                    # Use X-position proximity for tracking (better than sequential ID)
-                    pid = None
-                    min_dist = float('inf')
-                    
-                    for tracked_pid in list(prev_positions.keys()):
-                        if tracked_pid in used_pids:
-                            continue
-                        prev_x, prev_y, prev_t = prev_positions[tracked_pid]
-                        x_dist = abs(cx - prev_x)
-                        if x_dist < 80:  # Within 80 pixels horizontally
-                            if x_dist < min_dist:
-                                min_dist = x_dist
-                                pid = tracked_pid
-                    
-                    # Assign new ID if no close match found
-                    if pid is None:
-                        pid = max(prev_positions.keys()) + 1 if prev_positions else 0
-                        while pid in used_pids:
-                            pid += 1
-
-                    used_pids.add(pid)
-                    person_ids_by_index[i] = pid
-                    
-                    # Calculate speed if we have previous position
-                    if pid in prev_positions:
-                        prev_x, prev_y, prev_t = prev_positions[pid]
-                        dist = ((cx - prev_x)**2 + (cy - prev_y)**2)**0.5
-                        dt = max(now - prev_t, 0.016)  # Min 16ms (60 FPS)
-                        speed = dist / dt
-                        
-                        if pid not in person_speed_history:
-                            person_speed_history[pid] = []
-                        
-                        person_speed_history[pid].append(speed)
-                        if len(person_speed_history[pid]) > 5:
-                            person_speed_history[pid].pop(0)
-                        
-                        # Require sustained high speed (not just a spike)
-                        if len(person_speed_history[pid]) >= 3:
-                            recent_speeds = person_speed_history[pid][-3:]
-                            avg_speed = sum(recent_speeds) / len(recent_speeds)
-                            
-                            # Only trigger if consistently fast (not walking ~30-50 px/s)
-                            if avg_speed > RUNNING_SPEED_THRESHOLD:
-                                running_persons.add(pid)
-
-                    # Update the global tracking state for this pid.
-                    person_positions[pid] = (cx, cy, now)
-
-                # Draw person boxes and include person id in the overlay label.
-                for i, (x1, y1, x2, y2, cx, cy) in enumerate(persons):
-                    pid = person_ids_by_index.get(i)
-                    label = f"person {pid}" if pid is not None else "person"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(
-                        frame,
-                        label,
-                        (x1, y1 - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        (0, 255, 0),
-                        2,
-                    )
-                
-                # Alert on running detection
-                for pid in running_persons:
-                    add_alert("Running", "Person running detected")
-                    # Find person and draw text
-                    for i, (x1, y1, x2, y2, cx, cy) in enumerate(persons):
-                        tracked_pid = None
-                        for tp in person_positions.keys():
-                            prev_x, prev_y, _ = person_positions[tp]
-                            if abs(cx - prev_x) < 80:
-                                tracked_pid = tp
-                                break
-                        if tracked_pid == pid:
-                            cv2.putText(frame, "RUNNING!", (x1, y1 - 30),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-                            break
-                
-                # Clean up old tracking data
-                person_positions = {k: v for k, v in person_positions.items() if now - v[2] < 1.5}
-                person_speed_history = {k: v for k, v in person_speed_history.items() if k in person_positions}
-
-                # ---- LOITERING DETECTION ----
-                if persons:
-                    if person_start_time is None:
-                        person_start_time = now
-                    elif now - person_start_time > LOITER_THRESHOLD:
-                        add_alert("Loitering", "Person loitering detected")
-                        person_start_time = now
-                else:
-                    person_start_time = None
-
-                # ---- UNATTENDED BAG DETECTION ----
-                unattended_bag = False
-                for bx1, by1, bx2, by2 in bags:
-                    bcx = (bx1 + bx2) // 2
-                    bcy = (by1 + by2) // 2
-                    near_person = any(
-                        ((bcx - px[4])**2 + (bcy - px[5])**2)**0.5 < PERSON_BAG_DISTANCE
-                        for px in persons
-                    )
-                    
-                    if not near_person:
-                        unattended_bag = True
-                        cv2.putText(frame, "UNATTENDED!", (bx1, by1 - 10),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                        break
-
-                if unattended_bag:
-                    if bag_start_time is None:
-                        bag_start_time = now
-                    elif now - bag_start_time > BAG_THRESHOLD:
-                        add_alert("Unattended Bag", "Suspicious item detected")
-                        bag_start_time = now
-                else:
-                    bag_start_time = None
-
-                # Encode and yield
-                ret, buf = cv2.imencode(".jpg", frame)
-                if not ret:
-                    continue
-
-                if isinstance(source, str):
-                    time.sleep(1 / fps_limit)
-
-                yield (b"--frame\r\n"
-                       b"Content-Type: image/jpeg\r\n\r\n" + buf.tobytes() + b"\r\n")
-
-            except Exception as e:
-                # If we're cancelled, exit; otherwise avoid an infinite error loop.
-                if generation != stream_generation:
-                    break
-                print(f"✗ Frame error: {str(e)}")
+            worker = manager.get_worker(stream_id)
+            if worker is None or not worker.is_running():
                 time.sleep(0.05)
-                # If capture is no longer valid, exit.
-                if cap_local is None or (hasattr(cap_local, "isOpened") and not cap_local.isOpened()):
+                # If the worker is gone, stop streaming.
+                if manager.get_status(stream_id)["mode"] is None:
+                    break
+                # If frames have stalled for too long, end the response so clients reconnect.
+                if (time.time() - stall_started) > 5.0:
                     break
                 continue
 
-        print(f"✓ Stream ended. Processed {frames_processed} frames")
-        try:
-            if cap_local is not None:
-                cap_local.release()
-        except Exception:
-            pass
-        if cap is cap_local:
-            cap = None
+            jpg, ts = worker.get_latest_jpeg()
+            if jpg is None or ts is None or ts == last_ts:
+                time.sleep(0.02)
+                if (time.time() - stall_started) > 5.0:
+                    break
+                continue
 
-    except Exception as e:
-        print(f"✗ Critical error: {str(e)}")
-        try:
-            if cap_local is not None:
-                cap_local.release()
-        except Exception:
-            pass
-        if cap is cap_local:
-            cap = None
+            last_ts = ts
+            stall_started = time.time()
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
+            )
+    except GeneratorExit:
+        # Client disconnected.
+        return
 @router.get("/stream")
 def stream_video():
-    if current_video_source["mode"] is None:
+    status = manager.get_status(PRIMARY_STREAM_ID)
+    if status["mode"] is None:
         raise HTTPException(status_code=400, detail="No video source selected")
-    
-    source = current_video_source["path"]
-    
-    # Validate source exists before streaming
-    if isinstance(source, str):
-        if not os.path.exists(source):
-            print(f"ERROR: File does not exist: {source}")
-            raise HTTPException(status_code=404, detail=f"Video file not found: {source}")
-    
-    try:
-        gen = stream_generation
-        return StreamingResponse(
-            frame_generator(source, gen),
-            media_type="multipart/x-mixed-replace; boundary=frame"
-        )
-    except Exception as e:
-        print(f"ERROR in stream_video: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Stream error: {str(e)}")
+
+    # For local files, validate existence before streaming.
+    source = status["path"]
+    if isinstance(source, str) and ("://" not in source) and not os.path.exists(source):
+        raise HTTPException(status_code=404, detail=f"Video file not found: {source}")
+
+    return StreamingResponse(
+        _mjpeg_generator(PRIMARY_STREAM_ID),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/stream/{stream_id}")
+def stream_video_by_id(stream_id: str):
+    status = manager.get_status(str(stream_id))
+    if status["mode"] is None:
+        raise HTTPException(status_code=400, detail="No video source selected")
+
+    source = status["path"]
+    if isinstance(source, str) and ("://" not in source) and not os.path.exists(source):
+        raise HTTPException(status_code=404, detail=f"Video file not found: {source}")
+
+    return StreamingResponse(
+        _mjpeg_generator(str(stream_id)),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store"},
+    )

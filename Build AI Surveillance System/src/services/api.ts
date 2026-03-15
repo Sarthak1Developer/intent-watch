@@ -3,10 +3,13 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface Alert {
+  id?: string;
   type: string;
   message: string;
   time: string;
   timestamp?: string;
+  severity?: string | null;
+  camera?: string | null;
 }
 
 export interface AnalyticsData {
@@ -56,9 +59,10 @@ export const videoAPI = {
   },
 
   // Stop video stream
-  async stopVideo(): Promise<any> {
+  async stopVideo(options?: { keepalive?: boolean }): Promise<any> {
     const response = await fetch(`${API_BASE_URL}/video/stop`, {
       method: 'POST',
+      keepalive: Boolean(options?.keepalive),
     });
     
     if (!response.ok) {
@@ -71,6 +75,10 @@ export const videoAPI = {
   // Get video stream URL
   getStreamUrl(): string {
     return `${API_BASE_URL}/video/stream`;
+  },
+
+  getStreamUrlById(streamId: string): string {
+    return `${API_BASE_URL}/video/stream/${encodeURIComponent(streamId)}`;
   },
 
   // Start webcam
@@ -98,6 +106,92 @@ export const videoAPI = {
       throw new Error('Failed to get status');
     }
     
+    return response.json();
+  },
+
+  async listStreams(): Promise<{ streams: Array<{ id: string; mode: string | null; path: any; running: boolean }> }> {
+    const response = await fetch(`${API_BASE_URL}/video/streams`, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error('Failed to list streams');
+    }
+    return response.json();
+  },
+
+  async startStream(streamId: string, source: string): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/video/streams/start`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ stream_id: streamId, source }),
+    });
+
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const data = await response.json();
+        detail = String((data as any)?.detail ?? '');
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || 'Failed to start stream');
+    }
+    return response.json();
+  },
+
+  async stopStream(streamId: string, options?: { keepalive?: boolean }): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/video/streams/stop`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      keepalive: Boolean(options?.keepalive),
+      body: JSON.stringify({ stream_id: streamId }),
+    });
+
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const data = await response.json();
+        detail = String((data as any)?.detail ?? '');
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || 'Failed to stop stream');
+    }
+    return response.json();
+  },
+
+  // Set normalized zones (0..1) for backend processing
+  async setZones(zones: Array<{ id: string; name: string; severity: string; x: number; y: number; width: number; height: number }>): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/video/zones`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ zones }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to set zones');
+    }
+
+    return response.json();
+  },
+
+  async setZonesForStream(streamId: string, zones: Array<{ id: string; name: string; severity: string; x: number; y: number; width: number; height: number }>): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/video/zones/${encodeURIComponent(streamId)}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ zones }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to set zones');
+    }
+
     return response.json();
   },
 };
@@ -150,6 +244,14 @@ export const systemAPI = {
       throw new Error('Backend is not responding');
     }
     
+    return response.json();
+  },
+
+  async getMetrics(): Promise<any> {
+    const response = await fetch(`${API_BASE_URL}/metrics`, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error('Failed to fetch metrics');
+    }
     return response.json();
   },
 };
