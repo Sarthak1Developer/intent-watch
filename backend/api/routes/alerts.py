@@ -1,18 +1,28 @@
 from fastapi import APIRouter
 from datetime import datetime, timedelta
 import threading
+import uuid
+
+from api.phone_notify import notify_async
 
 router = APIRouter()
 
 alerts = []
 alerts_lock = threading.Lock()
 
-def add_alert(alert_type, message):
-    """Add alert to the list"""
+# Keep the alert store bounded so /alerts/live stays fast.
+MAX_ALERTS_STORED = 2000
+MAX_ALERTS_LIVE_RESPONSE = 200
+
+def add_alert(alert_type, message, *, severity: str | None = None, camera: str | None = None):
+    """Add alert to the list."""
     now = datetime.now()
     alert = {
+        "id": uuid.uuid4().hex,
         "type": alert_type,
         "message": message,
+        "severity": severity,
+        "camera": camera,
         # Human-friendly time for the UI
         "time": now.strftime("%H:%M:%S"),
         # Machine-friendly timestamp for analytics bucketing
@@ -20,7 +30,13 @@ def add_alert(alert_type, message):
     }
     with alerts_lock:
         alerts.append(alert)
+        if len(alerts) > MAX_ALERTS_STORED:
+            # Drop oldest alerts to keep memory bounded.
+            del alerts[: len(alerts) - MAX_ALERTS_STORED]
     print(f"[ALERT] {alert_type}: {message}")
+
+    # Best-effort, non-blocking phone notifications.
+    notify_async(alert)
 
 def clear_all_alerts():
     """Clear all alerts"""
@@ -32,7 +48,9 @@ def clear_all_alerts():
 def get_alerts():
     """Get all alerts"""
     with alerts_lock:
-        return list(alerts)
+        if not alerts:
+            return []
+        return list(alerts[-MAX_ALERTS_LIVE_RESPONSE:])
 
 @router.get("/analytics")
 def get_analytics():
@@ -45,6 +63,10 @@ def get_analytics():
             return "Medium"
         if "running" in t:
             return "Low"
+        if "weapon" in t:
+            return "Critical"
+        if "zone" in t:
+            return "Medium"
         return "Low"
 
     now = datetime.now()
@@ -58,7 +80,10 @@ def get_analytics():
     for alert in snapshot:
         alert_type = alert.get("type", "Unknown")
         alert_counts[alert_type] = alert_counts.get(alert_type, 0) + 1
-        sev = severity_for_type(alert_type)
+        sev = (alert.get("severity") or "").strip() or severity_for_type(alert_type)
+        sev = sev[:1].upper() + sev[1:].lower() if sev else "Low"
+        if sev not in severity_counts:
+            sev = severity_for_type(alert_type)
         severity_counts[sev] = severity_counts.get(sev, 0) + 1
 
     # Time-bucketed analytics (from ISO timestamps).

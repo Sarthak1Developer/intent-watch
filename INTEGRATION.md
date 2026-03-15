@@ -199,6 +199,70 @@ GET /alerts/live → Returns array of alerts
 
 ---
 
+## 📱 Phone Alerts (Weapon + Unattended Bag)
+
+IntentWatch can forward important alerts to your phone via **Telegram** (optional), even when the web app is closed.
+
+By default, IntentWatch sends alerts to your device notification panel via the web app (browser notifications) while the site is open.
+
+### 1) Create a Telegram bot
+
+- In Telegram, message `@BotFather`
+- Run `/newbot`
+- Copy the bot token (looks like `123456:ABC...`)
+
+### 2) Get your chat id
+
+Option A (simple):
+- Open a chat with your bot and send any message (e.g. `hi`)
+- Then open this URL in your browser (replace the token):
+  - `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
+- Look for `"chat":{"id": ... }` and copy that numeric id
+
+### 3) Set environment variables (Windows)
+
+Run these in PowerShell (new terminals will pick them up):
+
+```powershell
+setx INTENTWATCH_PHONE_ALERTS_ENABLED "1"
+setx INTENTWATCH_TELEGRAM_BOT_TOKEN "<YOUR_TOKEN>"
+setx INTENTWATCH_TELEGRAM_CHAT_ID "<YOUR_CHAT_ID>"
+```
+
+Optional: control which alert types get forwarded (comma-separated). Default is `Weapon,Unattended Bag`.
+
+```powershell
+setx INTENTWATCH_PHONE_ALERT_TYPES "Weapon,Unattended Bag"
+```
+
+### 4) Restart the backend
+
+Then start the backend again (so env vars load) and trigger a Weapon/Unattended Bag event.
+
+NOTE: Telegram forwarding is opt-in. Set:
+
+- `INTENTWATCH_TELEGRAM_ENABLED=1`
+
+Otherwise, alerts will not be sent to Telegram even if bot credentials are present.
+
+---
+
+## 🔫 Weapon Model (Using Your Trained `best.pt`)
+
+Backend supports a dedicated weapon model via env var (optional). If not set, it will try the default training output:
+
+- `runs_weapon/weapon80_20/weights/best.pt`
+
+To explicitly set the path:
+
+```powershell
+setx INTENTWATCH_WEAPON_MODEL_PATH "D:\intent-watch\runs_weapon\weapon80_20\weights\best.pt"
+```
+
+Restart the backend after setting this.
+
+---
+
 ## 🔄 Real-Time Features
 
 ### Polling Mechanism

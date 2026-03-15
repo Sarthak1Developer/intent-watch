@@ -9,8 +9,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 
 type CameraSource = 'webcam' | 'video_file' | 'rtsp';
 type Resolution = '640x480' | '1280x720' | '1920x1080';
-type ThemeColor = 'purple' | 'blue' | 'green' | 'red' | 'orange' | 'vibrant';
-type UiMode = 'default' | 'dark' | 'light' | 'colorful' | 'vibrant';
 
 type SettingsState = {
   // Camera Settings
@@ -32,12 +30,6 @@ type SettingsState = {
   sound: boolean;
   alertLogging: boolean;
   email: boolean;
-
-  // System Settings
-  uiMode: UiMode;
-  theme: boolean;
-  themeColor: ThemeColor;
-  autoStart: boolean;
 };
 
 export function Settings() {
@@ -61,11 +53,6 @@ export function Settings() {
       sound: true,
       alertLogging: true,
       email: false,
-
-      uiMode: 'default',
-      theme: true,
-      themeColor: 'purple',
-      autoStart: false,
     }),
     [],
   );
@@ -104,25 +91,6 @@ export function Settings() {
         if (typeof parsed.alertLogging === 'boolean') next.alertLogging = parsed.alertLogging;
         if (typeof parsed.email === 'boolean') next.email = parsed.email;
 
-        const uiMode = parsed.uiMode;
-        if (uiMode === 'default' || uiMode === 'dark' || uiMode === 'light' || uiMode === 'colorful' || uiMode === 'vibrant') next.uiMode = uiMode;
-
-        if (typeof parsed.theme === 'boolean') next.theme = parsed.theme;
-
-        const themeColor = parsed.themeColor;
-        if (
-          themeColor === 'purple' ||
-          themeColor === 'blue' ||
-          themeColor === 'green' ||
-          themeColor === 'red' ||
-          themeColor === 'orange' ||
-          themeColor === 'vibrant'
-        ) {
-          next.themeColor = themeColor;
-        }
-
-        if (typeof parsed.autoStart === 'boolean') next.autoStart = parsed.autoStart;
-
         return next;
       });
     } catch {
@@ -133,79 +101,31 @@ export function Settings() {
   // Hydrate persisted UI preferences on first load (optional)
   useEffect(() => {
     loadPersistedSettings();
-    try {
-      const storedUi = window.localStorage.getItem('intentwatch.uiMode');
-      if (storedUi === 'default' || storedUi === 'dark' || storedUi === 'light' || storedUi === 'colorful' || storedUi === 'vibrant') {
-        setSettings((prev) => ({ ...prev, uiMode: storedUi }));
-      }
-
-      const stored = window.localStorage.getItem('intentwatch.themeColor');
-      if (stored === 'purple' || stored === 'blue' || stored === 'green' || stored === 'red' || stored === 'orange' || stored === 'vibrant') {
-        setSettings((prev) => ({ ...prev, themeColor: stored }));
-      }
-    } catch {
-      // ignore
-    }
   }, []);
 
   const update = <K extends keyof SettingsState>(key: K, value: SettingsState[K]) => {
     setSettings((prev) => ({ ...prev, [key]: value }));
-
-    if (key === 'uiMode') {
-      try {
-        window.localStorage.setItem('intentwatch.uiMode', String(value));
-      } catch {
-        // ignore
-      }
-      window.dispatchEvent(new Event('intentwatch:ui'));
-    }
-
-    if (key === 'themeColor') {
-      try {
-        window.localStorage.setItem('intentwatch.themeColor', String(value));
-      } catch {
-        // ignore
-      }
-      window.dispatchEvent(new Event('intentwatch:theme'));
-    }
   };
 
   const reset = () => {
     setSettings(defaultSettings);
     try {
       window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
-      window.localStorage.setItem('intentwatch.uiMode', defaultSettings.uiMode);
-      window.localStorage.setItem('intentwatch.themeColor', defaultSettings.themeColor);
     } catch {
       // ignore
     }
-    window.dispatchEvent(new Event('intentwatch:ui'));
-    window.dispatchEvent(new Event('intentwatch:theme'));
   };
 
   const save = () => {
     try {
       window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-      window.localStorage.setItem('intentwatch.uiMode', settings.uiMode);
-      window.localStorage.setItem('intentwatch.themeColor', settings.themeColor);
     } catch {
       // ignore
     }
-    window.dispatchEvent(new Event('intentwatch:ui'));
-    window.dispatchEvent(new Event('intentwatch:theme'));
   };
 
-  const saveButtonTheme = useMemo(() => {
-    const map: Record<ThemeColor, { bg: string; hoverBg: string }> = {
-      purple: { bg: 'bg-purple-600', hoverBg: 'hover:bg-purple-700' },
-      blue: { bg: 'bg-blue-600', hoverBg: 'hover:bg-blue-700' },
-      green: { bg: 'bg-green-600', hoverBg: 'hover:bg-green-700' },
-      red: { bg: 'bg-red-600', hoverBg: 'hover:bg-red-700' },
-      orange: { bg: 'bg-orange-600', hoverBg: 'hover:bg-orange-700' },
-      vibrant: { bg: 'bg-gradient-to-r from-purple-600 via-red-600 to-orange-600', hoverBg: 'hover:opacity-90' },
-    };
-    return map[settings.themeColor];
-  }, [settings.themeColor]);
+  // Theme is fixed: Dark UI + Purple brand color.
+  const saveButtonTheme = { bg: 'bg-purple-600', hoverBg: 'hover:bg-purple-700' };
 
   return (
     <div className="space-y-6">
@@ -354,62 +274,12 @@ export function Settings() {
           </div>
         </Card>
 
-        {/* System Settings */}
-        <Card className="p-6">
-          <h2 className="text-lg font-semibold text-foreground">System Settings</h2>
-          <div className="mt-4 space-y-4">
-            <div>
-              <Label className="text-muted-foreground">UI color</Label>
-              <Select value={settings.uiMode} onValueChange={(v) => update('uiMode', v as UiMode)}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select UI mode" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">Default</SelectItem>
-                  <SelectItem value="dark">Dark</SelectItem>
-                  <SelectItem value="light">Light</SelectItem>
-                  <SelectItem value="colorful">Colorful</SelectItem>
-                  <SelectItem value="vibrant">Vibrant</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-foreground">Theme toggle</span>
-              <Switch checked={settings.theme} onCheckedChange={(v) => update('theme', Boolean(v))} />
-            </div>
-
-            <div>
-              <Label className="text-muted-foreground">Theme color</Label>
-              <Select value={settings.themeColor} onValueChange={(v) => update('themeColor', v as ThemeColor)}>
-                <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Select color" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="purple">Purple</SelectItem>
-                  <SelectItem value="blue">Blue</SelectItem>
-                  <SelectItem value="green">Green</SelectItem>
-                  <SelectItem value="red">Red</SelectItem>
-                  <SelectItem value="orange">Orange</SelectItem>
-                  <SelectItem value="vibrant">Vibrant</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-foreground">Auto start toggle</span>
-              <Switch checked={settings.autoStart} onCheckedChange={(v) => update('autoStart', Boolean(v))} />
-            </div>
-            <div>
-              <Button onClick={reset} variant="destructive" className="bg-red-600 hover:bg-red-700">
-                Reset
-              </Button>
-            </div>
-          </div>
-        </Card>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-3">
+        <Button onClick={reset} variant="destructive" className="bg-red-600 hover:bg-red-700">
+          Reset
+        </Button>
         <Button onClick={save} className={`${saveButtonTheme.bg} ${saveButtonTheme.hoverBg} text-white`}>
           Save
         </Button>

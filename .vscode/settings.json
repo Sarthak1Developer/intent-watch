@@ -1,5 +1,4 @@
 {
-    "python-envs.pythonProjects": [],
     "files.exclude": {
         "**/__pycache__": true,
         "**/*.py[cod]": true,

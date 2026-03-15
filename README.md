@@ -192,8 +192,7 @@ pip install -r requirements.txt
 ```
 
 **Error: "YOLO model not found"**
-- Ensure `yolov8n.pt` is in the root directory
-- It will be auto-downloaded on first run
+- Ensure `backend/yolov8n.pt` exists
 
 ### Frontend Issues
 

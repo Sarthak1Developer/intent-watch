@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -25,42 +25,108 @@ interface Zone {
   color: string;
 }
 
+const ZONES_STORAGE_KEY = 'intentwatch.zones.v1';
+const NORMALIZED_ZONES_STORAGE_KEY = 'intentwatch.zones.normalized.v1';
+
+const DEFAULT_ZONES: Zone[] = [
+  {
+    id: '1',
+    name: 'Restricted Area',
+    severity: 'critical',
+    x: 100,
+    y: 100,
+    width: 200,
+    height: 150,
+    color: '#ef4444'
+  },
+  {
+    id: '2',
+    name: 'High-Risk Zone',
+    severity: 'high',
+    x: 350,
+    y: 150,
+    width: 180,
+    height: 120,
+    color: '#f97316'
+  },
+  {
+    id: '3',
+    name: 'Monitoring Area',
+    severity: 'medium',
+    x: 150,
+    y: 300,
+    width: 250,
+    height: 100,
+    color: '#eab308'
+  }
+];
+
+function loadZonesFromStorage(): Zone[] {
+  try {
+    const raw = window.localStorage.getItem(ZONES_STORAGE_KEY);
+    if (!raw) return DEFAULT_ZONES;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_ZONES;
+    // Basic shape validation
+    const sanitized = parsed
+      .filter((z: any) => z && typeof z.id === 'string')
+      .map((z: any) => ({
+        id: String(z.id),
+        name: String(z.name ?? 'Zone'),
+        severity: (['critical', 'high', 'medium', 'low'].includes(z.severity) ? z.severity : 'low') as Zone['severity'],
+        x: Number(z.x ?? 0),
+        y: Number(z.y ?? 0),
+        width: Number(z.width ?? 100),
+        height: Number(z.height ?? 80),
+        color: String(z.color ?? '#3b82f6'),
+      } as Zone));
+    return sanitized.length ? sanitized : DEFAULT_ZONES;
+  } catch {
+    return DEFAULT_ZONES;
+  }
+}
+
+function saveZonesToStorage(zones: Zone[]) {
+  try {
+    window.localStorage.setItem(ZONES_STORAGE_KEY, JSON.stringify(zones));
+  } catch {
+    // ignore
+  }
+}
+
+function saveNormalizedZonesToStorage(zones: Zone[], previewSize: { width: number; height: number } | null) {
+  try {
+    if (!previewSize || previewSize.width <= 0 || previewSize.height <= 0) return;
+    const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+    const normalized = zones.map((z) => ({
+      id: z.id,
+      name: z.name,
+      severity: z.severity,
+      x: clamp01(z.x / previewSize.width),
+      y: clamp01(z.y / previewSize.height),
+      width: clamp01(z.width / previewSize.width),
+      height: clamp01(z.height / previewSize.height),
+    }));
+    window.localStorage.setItem(NORMALIZED_ZONES_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+    // ignore
+  }
+}
+
 export function ZoneConfig() {
-  const [zones, setZones] = useState<Zone[]>([
-    {
-      id: '1',
-      name: 'Restricted Area',
-      severity: 'critical',
-      x: 100,
-      y: 100,
-      width: 200,
-      height: 150,
-      color: '#ef4444'
-    },
-    {
-      id: '2',
-      name: 'High-Risk Zone',
-      severity: 'high',
-      x: 350,
-      y: 150,
-      width: 180,
-      height: 120,
-      color: '#f97316'
-    },
-    {
-      id: '3',
-      name: 'Monitoring Area',
-      severity: 'medium',
-      x: 150,
-      y: 300,
-      width: 250,
-      height: 100,
-      color: '#eab308'
-    }
-  ]);
+  const [zones, setZones] = useState<Zone[]>(() => loadZonesFromStorage());
 
   const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
   const [isEditing, setIsEditing] = useState(false);
+
+  const previewRef = useRef<HTMLDivElement>(null);
+  const interactionRef = useRef<null | {
+    zoneId: string;
+    mode: 'move' | 'resize-se';
+    startClientX: number;
+    startClientY: number;
+    startZone: Zone;
+  }>(null);
 
   const getSeverityColor = (severity: string) => {
     const colors = {
@@ -97,14 +163,67 @@ export function ZoneConfig() {
   };
 
   const updateZone = (updatedZone: Zone) => {
-    setZones(zones.map(z => z.id === updatedZone.id ? updatedZone : z));
+    setZones((prev) => prev.map(z => z.id === updatedZone.id ? updatedZone : z));
     setSelectedZone(updatedZone);
   };
 
+  const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+  const getPreviewSize = () => {
+    const el = previewRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    return { width: rect.width, height: rect.height };
+  };
+
+  useEffect(() => {
+    const onPointerMove = (e: PointerEvent) => {
+      const interaction = interactionRef.current;
+      if (!interaction) return;
+
+      const size = getPreviewSize();
+      if (!size) return;
+
+      const dx = e.clientX - interaction.startClientX;
+      const dy = e.clientY - interaction.startClientY;
+      const z = interaction.startZone;
+
+      if (interaction.mode === 'move') {
+        const newX = clamp(z.x + dx, 0, size.width - z.width);
+        const newY = clamp(z.y + dy, 0, size.height - z.height);
+        updateZone({ ...z, x: Math.round(newX), y: Math.round(newY) });
+      } else if (interaction.mode === 'resize-se') {
+        const minSize = 30;
+        const newWidth = clamp(z.width + dx, minSize, size.width - z.x);
+        const newHeight = clamp(z.height + dy, minSize, size.height - z.y);
+        updateZone({ ...z, width: Math.round(newWidth), height: Math.round(newHeight) });
+      }
+    };
+
+    const onPointerUp = () => {
+      if (interactionRef.current) {
+        interactionRef.current = null;
+      }
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, []);
+
   const saveChanges = () => {
     setIsEditing(false);
-    // In a real app, this would save to backend
+    saveZonesToStorage(zones);
   };
+
+  // Persist zones so they don't reset when navigating between tabs.
+  useEffect(() => {
+    saveZonesToStorage(zones);
+    saveNormalizedZonesToStorage(zones, getPreviewSize());
+  }, [zones]);
 
   return (
     <div className="space-y-6">
@@ -164,7 +283,7 @@ export function ZoneConfig() {
         {/* Zone Preview */}
         <Card className="bg-slate-900 border-slate-800 p-6 lg:col-span-2">
           <h3 className="text-lg font-semibold text-white mb-4">Zone Preview</h3>
-          <div className="relative bg-slate-950 rounded-lg overflow-hidden" style={{ height: '500px' }}>
+          <div ref={previewRef} className="relative bg-slate-950 rounded-lg overflow-hidden" style={{ height: '500px' }}>
             {/* Simulated camera view background */}
             <div className="absolute inset-0 bg-gradient-to-br from-slate-800 to-slate-900 opacity-50">
               <div className="grid grid-cols-8 grid-rows-6 h-full">
@@ -181,6 +300,20 @@ export function ZoneConfig() {
                 onClick={() => {
                   setSelectedZone(zone);
                   setIsEditing(true);
+                }}
+                onPointerDown={(e) => {
+                  // Begin drag-move interaction
+                  e.stopPropagation();
+                  (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+                  setSelectedZone(zone);
+                  setIsEditing(true);
+                  interactionRef.current = {
+                    zoneId: zone.id,
+                    mode: 'move',
+                    startClientX: e.clientX,
+                    startClientY: e.clientY,
+                    startZone: zone,
+                  };
                 }}
                 className={`absolute border-2 rounded cursor-pointer transition-all ${
                   selectedZone?.id === zone.id
@@ -202,6 +335,25 @@ export function ZoneConfig() {
                 >
                   {zone.name}
                 </div>
+
+                {/* Resize handle (bottom-right) shown for selected zone */}
+                {selectedZone?.id === zone.id && (
+                  <div
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+                      interactionRef.current = {
+                        zoneId: zone.id,
+                        mode: 'resize-se',
+                        startClientX: e.clientX,
+                        startClientY: e.clientY,
+                        startZone: zone,
+                      };
+                    }}
+                    className="absolute -bottom-2 -right-2 h-4 w-4 rounded-sm border border-white bg-slate-950 cursor-se-resize"
+                    title="Resize"
+                  />
+                )}
               </div>
             ))}
 

@@ -25,6 +25,16 @@ $BackendPort = if ($env:INTENTWATCH_BACKEND_PORT) { [int]$env:INTENTWATCH_BACKEN
 Write-Host "Starting FastAPI server on http://localhost:$BackendPort..." -ForegroundColor Green
 Write-Host ""
 
+# Optional: auto-wire trained weapon model if present.
+if (-Not $env:INTENTWATCH_WEAPON_MODEL_PATH) {
+    $WeaponModelPath = Join-Path $PSScriptRoot "runs_weapon\weapon80_20\weights\best.pt"
+    if (Test-Path $WeaponModelPath) {
+        $env:INTENTWATCH_WEAPON_MODEL_PATH = (Resolve-Path $WeaponModelPath).Path
+        Write-Host "Using trained weapon model: $env:INTENTWATCH_WEAPON_MODEL_PATH" -ForegroundColor Yellow
+        Write-Host ""
+    }
+}
+
 Push-Location backend
 try {
     # Avoid --reload on Windows here; it can spawn reloader processes that keep ports open and lead to 'buffering' / hung servers.
