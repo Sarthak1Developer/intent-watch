@@ -11,13 +11,13 @@ A real-time AI-powered CCTV surveillance system with intent detection capabiliti
 - **Modern UI**: React-based dashboard with real-time updates
 - **Analytics**: View detection statistics and alert history
 
-## Technology Stack
+## Technology StacK
 
 ### Backend
 - **FastAPI**: High-performance Python web framework
 - **YOLOv8**: State-of-the-art object detection
 - **OpenCV**: Video processing and computer vision
-- **Ultralytics**: YOLO model implementation
+- **Ultralytics**: YOLOV8s model implementation
 
 ### Frontend
 - **React**: Modern UI library
