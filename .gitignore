@@ -50,11 +50,24 @@ logs/
 /backend/data/videos/
 /backend/backend/data/videos/
 
+# Backend runtime outputs (history clips, snapshots, temp uploads, etc.)
+/backend/data/
+
 # Datasets (keep out of git)
 /weapon detection.v1i.yolov8/
+/weapon detection cctv v3 dataset.v1-weapon_detection_in_cctv.yolov8/
+/archive/
+/archive1/
+
+# Any datasets folder checked into the workspace during experiments
+/datasets/
 
 # Local model weights copied into workspace root (backend has its own)
 /yolov8n.pt
+/yolov8s.pt
+
+# Stray lockfile (backend is Python-only)
+/backend/package-lock.json
 
 # OS junk
 .DS_Store

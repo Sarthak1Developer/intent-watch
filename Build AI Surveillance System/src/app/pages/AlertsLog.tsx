@@ -12,13 +12,21 @@ import {
   Trash2
 } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
-import { alertsAPI, Alert } from '../../services/api';
+import { API_BASE_URL, alertsAPI, Alert } from '../../services/api';
 
 export function AlertsLog() {
   const [searchTerm, setSearchTerm] = useState('');
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [typeFilter, setTypeFilter] = useState('all');
   const [error, setError] = useState<string | null>(null);
+
+  const resolveSnapshotUrl = (raw: string | null | undefined) => {
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    if (s.startsWith('http://') || s.startsWith('https://')) return s;
+    if (s.startsWith('/')) return `${API_BASE_URL}${s}`;
+    return `${API_BASE_URL}/${s}`;
+  };
 
   // Fetch alerts periodically
   useEffect(() => {
@@ -153,6 +161,7 @@ export function AlertsLog() {
             <TableRow className="hover:bg-muted/50">
               <TableHead className="text-slate-400">Time</TableHead>
               <TableHead className="text-slate-400">Type</TableHead>
+              <TableHead className="text-slate-400">Snapshot</TableHead>
               <TableHead className="text-slate-400">Message</TableHead>
               <TableHead className="text-slate-400 text-right">Status</TableHead>
             </TableRow>
@@ -160,7 +169,7 @@ export function AlertsLog() {
           <TableBody>
             {filteredAlerts.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={4} className="text-center py-12">
+                <TableCell colSpan={5} className="text-center py-12">
                   <div className="flex flex-col items-center justify-center">
                     <AlertTriangle className="w-12 h-12 text-slate-600 mb-3" />
                     <p className="text-slate-400">No alerts found</p>
@@ -183,6 +192,26 @@ export function AlertsLog() {
                     <Badge className={getSeverityColor(alert.type)}>
                       {alert.type}
                     </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {resolveSnapshotUrl(alert.snapshot_url) ? (
+                      <a
+                        href={resolveSnapshotUrl(alert.snapshot_url) as string}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open snapshot"
+                        className="inline-block"
+                      >
+                        <img
+                          src={resolveSnapshotUrl(alert.snapshot_url) as string}
+                          alt="Alert snapshot"
+                          className="w-16 h-10 rounded-md object-cover border border-border"
+                          loading="lazy"
+                        />
+                      </a>
+                    ) : (
+                      <span className="text-muted-foreground text-xs">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-foreground">
                     {alert.message}

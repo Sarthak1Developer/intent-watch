@@ -7,6 +7,7 @@ import {
   Video, 
   BarChart3, 
   Bell, 
+  Clock,
   MapPin,
   Settings as SettingsIcon,
   Activity,
@@ -21,6 +22,7 @@ const navItems = [
   { path: '/feed', icon: Video, label: 'Live Feed' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/alerts', icon: Bell, label: 'Alerts Log' },
+  { path: '/history', icon: Clock, label: 'History' },
   { path: '/zones', icon: MapPin, label: 'Zone Config' },
   { path: '/settings', icon: SettingsIcon, label: 'Settings' },
 ];
@@ -93,10 +95,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
       return () => mql.removeEventListener('change', onChange);
     } catch {
       // Safari/older fallback
-      // @ts-expect-error legacy
       mql.addListener?.(onChange);
       return () => {
-        // @ts-expect-error legacy
         mql.removeListener?.(onChange);
       };
     }

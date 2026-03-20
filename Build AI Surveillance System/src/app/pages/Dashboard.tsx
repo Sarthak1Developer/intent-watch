@@ -8,7 +8,7 @@ import {
   Activity
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { mockStats, generateActivityData, generateAlertDistribution, generateMockAlerts } from '../data/mockData';
 import { Badge } from '../components/ui/badge';
 import { alertsAPI, AnalyticsData, systemAPI } from '../../services/api';

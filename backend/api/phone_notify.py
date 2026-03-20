@@ -64,6 +64,30 @@ def _telegram_send_message(text: str) -> None:
         resp.read()
 
 
+def _telegram_send_photo(photo_url: str, caption: str) -> None:
+    if not _env_bool("INTENTWATCH_TELEGRAM_ENABLED", default=False):
+        return
+
+    cfg = _telegram_config()
+    if cfg is None:
+        return
+
+    token, chat_id = cfg
+    url = f"https://api.telegram.org/bot{token}/sendPhoto"
+
+    data = urllib.parse.urlencode(
+        {
+            "chat_id": chat_id,
+            "photo": photo_url,
+            "caption": caption,
+        }
+    ).encode("utf-8")
+
+    req = urllib.request.Request(url, data=data, method="POST")
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        resp.read()
+
+
 def notify_async(alert: dict) -> None:
     """Send alert to phone notification channels (best-effort, non-blocking)."""
     if not should_notify(alert):
@@ -75,6 +99,7 @@ def notify_async(alert: dict) -> None:
     severity = str(alert.get("severity", "") or "").strip()
     camera = str(alert.get("camera", "") or "").strip()
     time_s = str(alert.get("time", "") or "").strip()
+    snapshot_url = str(alert.get("snapshot_url", "") or "").strip()
 
     parts: list[str] = [f"{alert_type}"]
     if severity:
@@ -87,9 +112,15 @@ def notify_async(alert: dict) -> None:
     header = " ".join(parts)
     text = header + (f"\n{message}" if message else "")
 
+    # Telegram can only fetch publicly reachable URLs.
+    can_send_photo = snapshot_url.lower().startswith("http://") or snapshot_url.lower().startswith("https://")
+
     def _run() -> None:
         try:
-            _telegram_send_message(text)
+            if can_send_photo:
+                _telegram_send_photo(snapshot_url, text)
+            else:
+                _telegram_send_message(text)
         except Exception:
             # Best-effort: never let notification errors break alerting.
             return

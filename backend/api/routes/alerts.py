@@ -1,11 +1,21 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from datetime import datetime, timedelta
+from pathlib import Path
+import os
+import re
 import threading
 import uuid
 
 from api.phone_notify import notify_async
 
 router = APIRouter()
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]  # .../backend
+SNAP_DIR = BACKEND_DIR / "data" / "snaps"
+SNAP_DIR.mkdir(parents=True, exist_ok=True)
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 alerts = []
 alerts_lock = threading.Lock()
@@ -14,7 +24,14 @@ alerts_lock = threading.Lock()
 MAX_ALERTS_STORED = 2000
 MAX_ALERTS_LIVE_RESPONSE = 200
 
-def add_alert(alert_type, message, *, severity: str | None = None, camera: str | None = None):
+def add_alert(
+    alert_type,
+    message,
+    *,
+    severity: str | None = None,
+    camera: str | None = None,
+    snapshot_url: str | None = None,
+):
     """Add alert to the list."""
     now = datetime.now()
     alert = {
@@ -23,6 +40,7 @@ def add_alert(alert_type, message, *, severity: str | None = None, camera: str |
         "message": message,
         "severity": severity,
         "camera": camera,
+        "snapshot_url": snapshot_url,
         # Human-friendly time for the UI
         "time": now.strftime("%H:%M:%S"),
         # Machine-friendly timestamp for analytics bucketing
@@ -37,6 +55,45 @@ def add_alert(alert_type, message, *, severity: str | None = None, camera: str |
 
     # Best-effort, non-blocking phone notifications.
     notify_async(alert)
+
+
+def _safe_stream_id(stream_id: str) -> str:
+    s = str(stream_id or "").strip()
+    if not s or "/" in s or "\\" in s or ".." in s:
+        raise HTTPException(status_code=400, detail="Invalid stream_id")
+    return s
+
+
+def _safe_date(date: str) -> str:
+    d = str(date or "").strip()
+    if not _DATE_RE.match(d):
+        raise HTTPException(status_code=400, detail="Invalid date (expected YYYY-MM-DD)")
+    return d
+
+
+def _safe_filename(name: str) -> str:
+    n = os.path.basename(str(name or "").strip())
+    if not n or n in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if any(sep in n for sep in ["/", "\\"]):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return n
+
+
+@router.get("/snapshot/{stream_id}/{date}/{filename}")
+def get_snapshot(stream_id: str, date: str, filename: str):
+    """Serve a locally saved snapshot image."""
+    sid = _safe_stream_id(stream_id)
+    d = _safe_date(date)
+    fn = _safe_filename(filename)
+
+    p = (SNAP_DIR / sid / d / fn).resolve()
+    if SNAP_DIR.resolve() not in p.parents:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+
+    return FileResponse(str(p), media_type="image/jpeg", filename=fn)
 
 def clear_all_alerts():
     """Clear all alerts"""

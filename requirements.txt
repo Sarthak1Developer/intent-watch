@@ -6,3 +6,5 @@ numpy
 ultralytics
 deep-sort-realtime
 playsound==1.2.2
+python-dotenv>=1.0.0
+supabase>=2.3.0

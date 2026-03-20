@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pathlib import Path
 import os
+import re
 import shutil
 import time
 import uuid
@@ -23,26 +24,239 @@ VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_CANDIDATES = [BACKEND_DIR / "yolov8n.pt"]
 
 
+def _sorted_checkpoints(root: Path, *, max_items: int = 20) -> list[Path]:
+    """Return best.pt checkpoints under root sorted newest-first."""
+    if not root.exists():
+        return []
+    found: list[Path] = []
+    try:
+        found = [p for p in root.rglob("best.pt") if p.is_file()]
+    except Exception:
+        return []
+    found.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0.0, reverse=True)
+    return found[: max(0, int(max_items))]
+
+
 def _weapon_model_candidates() -> list[Path]:
     # Optional second model dedicated to weapons.
     # If provided, any detection from this model will be treated as a Weapon alert.
     env_path = os.getenv("INTENTWATCH_WEAPON_MODEL_PATH")
 
+    def _env_bool(name: str, default: bool = False) -> bool:
+        v = os.getenv(name)
+        if v is None:
+            return bool(default)
+        return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    allow_legacy = _env_bool("INTENTWATCH_WEAPON_ALLOW_LEGACY_MODEL", False)
+
     candidates: list[Path] = []
     if env_path:
         candidates.append(Path(env_path))
 
-    # Default to the known training output location used by this repo.
-    candidates.append(WORKSPACE_DIR / "runs_weapon" / "weapon80_20" / "weights" / "best.pt")
-    return candidates
+    # Default to known training output locations used by this repo.
+    # Ultralytics CLI often writes under: runs/detect/<project>/<name>/weights/best.pt
+    candidates.extend(
+        [
+            # Existing trained models used in this workspace
+            WORKSPACE_DIR
+            / "runs"
+            / "detect"
+            / "runs_weapon"
+            / "combined_yolov8s_gpu"
+            / "weights"
+            / "best.pt",
+            WORKSPACE_DIR
+            / "runs"
+            / "detect"
+            / "runs_weapon"
+            / "combined_ft_from_archive1_best"
+            / "weights"
+            / "best.pt",
+            # New multi-class weapon model (preferred)
+            WORKSPACE_DIR
+            / "runs"
+            / "detect"
+            / "runs_weapon"
+            / "weapon_types_v1"
+            / "weights"
+            / "best.pt",
+            # Legacy location (if user trained with project=runs_weapon but without the extra runs/detect prefix)
+            WORKSPACE_DIR / "runs_weapon" / "weapon_types_v1" / "weights" / "best.pt",
+        ]
+    )
+
+    # Legacy weapon80_20 checkpoint has historically produced many false positives
+    # (and often contains non-weapon/placeholder labels). Only include it when
+    # explicitly allowed.
+    if allow_legacy:
+        candidates.extend(
+            [
+                WORKSPACE_DIR
+                / "runs"
+                / "detect"
+                / "runs_weapon"
+                / "weapon80_20"
+                / "weights"
+                / "best.pt",
+                WORKSPACE_DIR / "runs_weapon" / "weapon80_20" / "weights" / "best.pt",
+            ]
+        )
+
+    # Also consider any other trained checkpoints under runs/detect.
+    # This helps when model run names change.
+    auto_found = _sorted_checkpoints(WORKSPACE_DIR / "runs" / "detect", max_items=10)
+    if not allow_legacy:
+        auto_found = [p for p in auto_found if "weapon80_20" not in str(p).lower()]
+    candidates.extend(auto_found)
+
+    # De-dupe while preserving order.
+    seen: set[Path] = set()
+    uniq: list[Path] = []
+    for p in candidates:
+        if p in seen:
+            continue
+        seen.add(p)
+        uniq.append(p)
+    return uniq
+
+
+def _weapon_fallback_model_candidates() -> list[Path]:
+    """Candidates for a fallback 'person-with-weapon' model.
+
+    This model is NOT expected to draw a tight weapon box; it usually predicts a person-sized box.
+    We use it only when the weapon-type model fails to produce a weapon box for the frame.
+    """
+    env_path = os.getenv("INTENTWATCH_WEAPON_FALLBACK_MODEL_PATH")
+
+    def _env_bool(name: str, default: bool = False) -> bool:
+        v = os.getenv(name)
+        if v is None:
+            return bool(default)
+        return str(v).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+    # Fallback model is noisy; keep it OFF by default.
+    enable_fallback = _env_bool("INTENTWATCH_WEAPON_ENABLE_FALLBACK", False)
+    if not env_path and not enable_fallback:
+        return []
+
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+
+    candidates.extend(
+        [
+            # Old training output (most common in this repo)
+            WORKSPACE_DIR / "runs_weapon" / "weapon80_20" / "weights" / "best.pt",
+            # If trained via Ultralytics default directory layout
+            WORKSPACE_DIR
+            / "runs"
+            / "detect"
+            / "runs_weapon"
+            / "weapon80_20"
+            / "weights"
+            / "best.pt",
+        ]
+    )
+
+    # De-dupe while preserving order.
+    seen: set[Path] = set()
+    uniq: list[Path] = []
+    for p in candidates:
+        if p in seen:
+            continue
+        seen.add(p)
+        uniq.append(p)
+    return uniq
+
+
+def _weapon_verify_model_candidates() -> list[Path]:
+    """Candidates for a secondary 'verify' weapon model.
+
+    This model is executed only at Weapon event start, right before alert emission,
+    to suppress false positives from the primary (fast) model.
+    """
+    env_path = os.getenv("INTENTWATCH_WEAPON_VERIFY_MODEL_PATH")
+
+    candidates: list[Path] = []
+    if env_path:
+        candidates.append(Path(env_path))
+
+    # Default locations used by this repo for a verify model run.
+    candidates.extend(
+        [
+            WORKSPACE_DIR
+            / "runs"
+            / "detect"
+            / "runs_weapon"
+            / "weapon_verify_v8s"
+            / "weights"
+            / "best.pt",
+            WORKSPACE_DIR / "runs_weapon" / "weapon_verify_v8s" / "weights" / "best.pt",
+        ]
+    )
+
+    auto_found = _sorted_checkpoints(WORKSPACE_DIR / "runs" / "detect", max_items=10)
+    # Heuristic: prefer run names that contain "verify".
+    auto_found = [p for p in auto_found if "verify" in str(p).lower()]
+    candidates.extend(auto_found)
+
+    seen: set[Path] = set()
+    uniq: list[Path] = []
+    for p in candidates:
+        if p in seen:
+            continue
+        seen.add(p)
+        uniq.append(p)
+    return uniq
 
 # ---------------- STREAM MANAGER ----------------
 PRIMARY_STREAM_ID = "primary"
-manager = StreamManager(MODEL_CANDIDATES, _weapon_model_candidates())
+manager = StreamManager(
+    MODEL_CANDIDATES,
+    _weapon_model_candidates(),
+    _weapon_verify_model_candidates(),
+    _weapon_fallback_model_candidates(),
+)
+
+
+_IP_WEBCAM_HOSTPORT_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}:\d{2,5}$")
+
+
+def _normalize_ip_webcam_source(source: str) -> str:
+    """Normalize common Android IP Webcam inputs.
+
+    Supported user inputs:
+    - '10.12.26.111:8080' -> 'http://10.12.26.111:8080/video'
+    - 'http://10.12.26.111:8080' -> 'http://10.12.26.111:8080/video'
+    - 'http://10.12.26.111:8080/video' -> unchanged
+    """
+    s = str(source or "").strip()
+    if not s:
+        return s
+
+    # If user provided just IP:PORT (no scheme)
+    if _IP_WEBCAM_HOSTPORT_RE.match(s):
+        return f"http://{s}/video"
+
+    # If user provided http(s)://host:port with no path
+    s_lower = s.lower()
+    if s_lower.startswith("http://") or s_lower.startswith("https://"):
+        # If it already includes a path beyond the host:port, keep it.
+        # Otherwise append /video (IP Webcam MJPEG endpoint).
+        after_scheme = s.split("://", 1)[-1]
+        if "/" not in after_scheme:
+            return s.rstrip("/") + "/video"
+        # If it ends with just a trailing slash, assume root.
+        if after_scheme.endswith("/"):
+            return s.rstrip("/") + "/video"
+
+    return s
 
 
 class StartCameraRequest(BaseModel):
-    device_id: int = 0
+    # Can be a numeric device id (0,1,2,...) or an IP Webcam URL/host:port.
+    device_id: int | str = 0
 
 
 class StartVideoRequest(BaseModel):
@@ -135,17 +349,34 @@ def upload_video(file: UploadFile = File(...)):
 def start_camera(body: StartCameraRequest | None = None):
     """Start live camera feed"""
     try:
-        device_id = 0 if body is None else int(body.device_id)
-        # Test camera access first
-        test_cap = _open_capture_for_validation(device_id)
-        if not test_cap.isOpened():
-            test_cap.release()
-            raise HTTPException(status_code=500, detail="Camera not available or already in use")
-        test_cap.release()
+        # If user has configured an IP Webcam URL, prefer it.
+        webcam_url = str(os.getenv("INTENTWATCH_WEBCAM_URL") or "").strip()
+        if webcam_url:
+            src = _normalize_ip_webcam_source(webcam_url)
+            manager.start(PRIMARY_STREAM_ID, src, mode="camera")
+            print("✓ IP webcam selected successfully")
+            return {"message": "IP webcam selected", "source": src}
 
-        manager.start(PRIMARY_STREAM_ID, device_id, mode="camera")
-        print("✓ Camera selected successfully")
-        return {"message": "Live camera selected", "device_id": device_id}
+        raw = 0 if body is None else body.device_id
+        # Numeric => local webcam device id
+        if isinstance(raw, int) or (isinstance(raw, str) and raw.strip().isdigit()):
+            device_id = int(raw)
+            # Test camera access first
+            test_cap = _open_capture_for_validation(device_id)
+            if not test_cap.isOpened():
+                test_cap.release()
+                raise HTTPException(status_code=500, detail="Camera not available or already in use")
+            test_cap.release()
+
+            manager.start(PRIMARY_STREAM_ID, device_id, mode="camera")
+            print("✓ Camera selected successfully")
+            return {"message": "Live camera selected", "device_id": device_id}
+
+        # Otherwise treat as IP Webcam url/host:port
+        src = _normalize_ip_webcam_source(str(raw))
+        manager.start(PRIMARY_STREAM_ID, src, mode="camera")
+        print("✓ IP webcam selected successfully")
+        return {"message": "IP webcam selected", "source": src}
     except Exception as e:
         print(f"✗ Camera error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Camera error: {str(e)}")
@@ -169,6 +400,8 @@ def start_video(body: StartVideoRequest):
         if source_raw.lower() in {"webcam", "camera"}:
             source: int | str = 0
         else:
+            # Allow Android IP Webcam shorthand like '10.12.26.111:8080'
+            source_raw = _normalize_ip_webcam_source(source_raw)
             # If numeric, treat as camera device id.
             try:
                 source = int(source_raw)
@@ -188,14 +421,18 @@ def start_video(body: StartVideoRequest):
                 raise HTTPException(status_code=500, detail="Camera not available")
             test_cap.release()
         else:
-            # If it's a local file path, ensure it exists. URLs/RTSP may not exist as files.
+            # If it's a local file path, ensure it exists. URLs/RTSP/IPcam may not exist as files.
             if os.path.exists(str(source)) is False and ("://" not in str(source)):
                 raise HTTPException(status_code=404, detail="Video file not found")
 
         manager.start(
             PRIMARY_STREAM_ID,
             source,
-            mode=("camera" if isinstance(source, int) else "file"),
+            mode=(
+                "camera"
+                if (isinstance(source, int) or (isinstance(source, str) and "://" in str(source)))
+                else "file"
+            ),
         )
         return {"message": "Video source selected", "source": source_raw}
     except HTTPException:
@@ -238,6 +475,8 @@ def start_stream(body: StartStreamRequest):
 
     source_raw = str(body.source).strip()
     try:
+        # Allow Android IP Webcam shorthand like '10.12.26.111:8080'
+        source_raw = _normalize_ip_webcam_source(source_raw)
         # camera device ids can be numeric
         try:
             source: int | str = int(source_raw)
@@ -257,7 +496,15 @@ def start_stream(body: StartStreamRequest):
             if os.path.exists(str(source)) is False and ("://" not in str(source)):
                 raise HTTPException(status_code=404, detail="Video file not found")
 
-        manager.start(stream_id, source, mode=("camera" if isinstance(source, int) else "file"))
+        manager.start(
+            stream_id,
+            source,
+            mode=(
+                "camera"
+                if (isinstance(source, int) or (isinstance(source, str) and "://" in str(source)))
+                else "file"
+            ),
+        )
         return {"message": "Stream started", "stream_id": stream_id, "source": source_raw}
     except HTTPException:
         raise

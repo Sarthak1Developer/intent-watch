@@ -199,6 +199,86 @@ GET /alerts/live → Returns array of alerts
 
 ---
 
+## 🎞️ History (Local) + Supabase (Optional)
+
+IntentWatch can automatically record the **webcam live feed** into short MP4 clips, and optionally upload those clips to **Supabase Storage** and save metadata into **Supabase Postgres**.
+
+### How local recording works
+
+- Recording starts when you start a webcam stream via `POST /video/start-camera`.
+- Clips are written under:
+  - `backend/data/history/<stream_id>/<YYYY-MM-DD>/<HHMMSS>.mp4`
+- Clip rotation interval (default 60s) is controlled by `INTENTWATCH_HISTORY_CLIP_SECONDS`.
+
+### History API endpoints
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/history/dates?stream_id=primary` | List available dates for recorded clips |
+| GET | `/history/clips?stream_id=primary&date=YYYY-MM-DD` | List clips for a date (includes backend playback URL; includes `public_url` if uploaded) |
+| GET | `/history/clip/{stream_id}/{date}/{filename}` | Stream a local MP4 clip via the backend |
+
+### Frontend usage
+
+- Open: `http://localhost:5173/history`
+- The UI loads dates/clips from the backend and plays clips using:
+  - `public_url` (Supabase) if present, otherwise
+  - `GET /history/clip/...` (local backend)
+
+### Supabase setup (optional)
+
+1) Create a Storage bucket
+
+- Bucket name: `footages` (or set `INTENTWATCH_HISTORY_BUCKET`)
+- To use `public_url` playback, the bucket must allow public reads (or you’ll need signed URLs — not implemented in this repo yet).
+
+2) (Optional) Create a Postgres table for metadata
+
+Default table name: `footage_clips` (or set `INTENTWATCH_HISTORY_TABLE`).
+
+Minimal schema:
+
+```sql
+create table if not exists public.footage_clips (
+  id bigserial primary key,
+  stream_id text not null,
+  storage_key text not null,
+  public_url text,
+  created_at timestamptz not null default now()
+);
+```
+
+3) Configure backend environment variables
+
+You can set these in the same shell/session where you run the backend (or in your process manager), OR put them into a local `.env` file.
+
+**Option A: `.env` file (recommended for local dev)**
+
+- Copy `.env.example` to `.env` in the repo root
+- Fill in values
+- Restart the backend
+
+**Option B: shell environment variables**
+
+Set these in the same shell/session where you run the backend:
+
+```powershell
+# Required
+$env:SUPABASE_URL="https://<your-project-ref>.supabase.co"
+$env:SUPABASE_SERVICE_ROLE_KEY="<service_role_key>"
+
+# Enable uploads
+$env:INTENTWATCH_HISTORY_UPLOAD_SUPABASE="1"
+
+# Optional
+$env:INTENTWATCH_HISTORY_BUCKET="footages"
+$env:INTENTWATCH_HISTORY_TABLE="footage_clips"
+```
+
+Security note: keep the **service role key** on the backend only (never in the frontend).
+
+---
+
 ## 📱 Phone Alerts (Weapon + Unattended Bag)
 
 IntentWatch can forward important alerts to your phone via **Telegram** (optional), even when the web app is closed.

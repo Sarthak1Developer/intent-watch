@@ -1,6 +1,6 @@
 // API Service for IntentWatch Backend Integration
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 export interface Alert {
   id?: string;
@@ -10,6 +10,7 @@ export interface Alert {
   timestamp?: string;
   severity?: string | null;
   camera?: string | null;
+  snapshot_url?: string | null;
 }
 
 export interface AnalyticsData {

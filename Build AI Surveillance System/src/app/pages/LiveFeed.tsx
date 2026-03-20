@@ -15,7 +15,7 @@ import {
   X,
   Plus,
 } from 'lucide-react';
-import { videoAPI, alertsAPI, Alert } from '../../services/api';
+import { API_BASE_URL, videoAPI, alertsAPI, Alert } from '../../services/api';
 import { ensureNotificationPermissionNonBlocking } from '../../services/alertNotifications';
 
 export function LiveFeed() {
@@ -28,7 +28,7 @@ export function LiveFeed() {
   const [extraStreams, setExtraStreams] = useState<Array<{ id: string; source: string }>>([]);
   const [extraStreaming, setExtraStreaming] = useState<Record<string, boolean>>({});
   const [extraStreamNonce, setExtraStreamNonce] = useState<Record<string, number>>({});
-  const [newCameraSource, setNewCameraSource] = useState('1');
+  const [newCameraSource, setNewCameraSource] = useState('');
   const [fullscreenStreamId, setFullscreenStreamId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const reconnectAttemptsRef = useRef(0);
@@ -36,6 +36,14 @@ export function LiveFeed() {
   const isStreamingRef = useRef(false);
   const extraStreamsRef = useRef<Array<{ id: string; source: string }>>([]);
   const streamUrl = `${videoAPI.getStreamUrl()}?t=${streamNonce}`;
+
+  const resolveSnapshotUrl = (raw: string | null | undefined) => {
+    const s = String(raw || '').trim();
+    if (!s) return null;
+    if (s.startsWith('http://') || s.startsWith('https://')) return s;
+    if (s.startsWith('/')) return `${API_BASE_URL}${s}`;
+    return `${API_BASE_URL}/${s}`;
+  };
 
   useEffect(() => {
     extraStreamsRef.current = extraStreams;
@@ -82,31 +90,49 @@ export function LiveFeed() {
     isStreamingRef.current = isStreaming;
   }, [isStreaming]);
 
-  // IMPORTANT: Stop the backend stream when navigating away from Live Feed.
-  // Otherwise the MJPEG stream + AI processing can keep running in the background
-  // and make the whole app feel stuck when switching tabs.
+  // IMPORTANT: Do NOT auto-stop streams on navigation.
+  // The user expects streams (and metrics) to keep running while browsing other pages.
+
+  // On mount, sync UI state with backend streams so the page reflects any already-running workers.
   useEffect(() => {
-    return () => {
+    let cancelled = false;
+    (async () => {
       try {
-        // Best-effort: keepalive makes this more reliable during navigation.
-        void videoAPI.stopVideo({ keepalive: true }).catch(() => {
-          // ignore
-        });
+        const listed = await videoAPI.listStreams();
+        if (cancelled) return;
+        const streams = Array.isArray(listed?.streams) ? listed.streams : [];
 
-        // Extra best-effort fallback for some navigation paths.
-        if (typeof navigator !== 'undefined' && 'sendBeacon' in navigator) {
-          navigator.sendBeacon(`${videoAPI.getStreamUrl().replace('/stream', '/stop')}`);
+        const primary = streams.find((s: any) => String(s?.id) === 'primary');
+        const primaryRunning = Boolean(primary?.running);
+        setIsStreaming(primaryRunning);
+        if (primaryRunning) {
+          setStreamNonce((n) => n + 1);
+          setActiveSource(primary?.mode === 'file' ? 'file' : 'webcam');
         }
 
-        // Stop any extra streams we started on this page.
-        for (const s of extraStreamsRef.current) {
-          void videoAPI.stopStream(s.id, { keepalive: true }).catch(() => {
-            // ignore
-          });
-        }
+        const extras = streams
+          .filter((s: any) => String(s?.id) !== 'primary')
+          .map((s: any) => ({ id: String(s.id), source: String(s?.path ?? '') }));
+        setExtraStreams(extras);
+        setExtraStreaming(
+          extras.reduce((acc: Record<string, boolean>, s) => {
+            acc[s.id] = true;
+            return acc;
+          }, {})
+        );
+        setExtraStreamNonce(
+          extras.reduce((acc: Record<string, number>, s) => {
+            acc[s.id] = (acc[s.id] ?? 0) + 1;
+            return acc;
+          }, {})
+        );
       } catch {
         // ignore
       }
+    })();
+
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -138,7 +164,7 @@ export function LiveFeed() {
     };
 
     fetchAlerts();
-    const interval = setInterval(fetchAlerts, 2000); // Poll every 2 seconds
+    const interval = setInterval(fetchAlerts, 500); // Poll frequently for near-real-time alerts
 
     return () => clearInterval(interval);
   }, []);
@@ -196,7 +222,8 @@ export function LiveFeed() {
     const raw = String(newCameraSource || '').trim();
     if (!raw) return;
 
-    const streamId = `cam-${raw}`;
+    const safeId = raw.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const streamId = `cam-${safeId}`;
     if (extraStreams.some((s) => s.id === streamId)) return;
 
     setIsLoading(true);
@@ -300,7 +327,7 @@ export function LiveFeed() {
         setIsStreaming(true);
         setActiveSource('file');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error uploading video:', error);
       if (isMountedRef.current) {
         setError(error?.message || 'Failed to upload video');
@@ -384,7 +411,7 @@ export function LiveFeed() {
               <Input
                 value={newCameraSource}
                 onChange={(e) => setNewCameraSource(e.target.value)}
-                placeholder="Camera device id (0, 1, 2...)"
+                placeholder="Enter camera IP/URL (e.g., 10.12.26.111:8080)"
                 className="max-w-xs"
               />
               <Button variant="outline" onClick={handleAddCamera} disabled={isLoading}>
@@ -458,16 +485,18 @@ export function LiveFeed() {
                       <Maximize2 className="w-4 h-4" />
                     </Button>
 
-                    {/* Status overlay */}
-                    <div className="absolute top-4 left-4 space-y-2">
-                      <Badge className="bg-red-600 text-white flex items-center gap-2">
-                        <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                        LIVE
-                      </Badge>
-                      <div className="text-white text-sm bg-black/50 px-2 py-1 rounded backdrop-blur-sm">
-                        {new Date().toLocaleTimeString()}
+                    {/* Status overlay (webcam only) */}
+                    {activeSource === 'webcam' && (
+                      <div className="absolute top-4 left-4 space-y-2">
+                        <Badge className="bg-red-600 text-white flex items-center gap-2">
+                          <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+                          LIVE
+                        </Badge>
+                        <div className="text-white text-sm bg-black/50 px-2 py-1 rounded backdrop-blur-sm">
+                          {new Date().toLocaleTimeString()}
+                        </div>
                       </div>
-                    </div>
+                    )}
 
                     {/* Stats overlay */}
                     <div className="absolute bottom-4 left-4 flex gap-4">
@@ -614,6 +643,22 @@ export function LiveFeed() {
                           <p className="text-muted-foreground text-xs mt-1">{alert.time}</p>
                         </div>
                       </div>
+                      {resolveSnapshotUrl(alert.snapshot_url) && (
+                        <a
+                          href={resolveSnapshotUrl(alert.snapshot_url) as string}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="shrink-0"
+                          title="Open snapshot"
+                        >
+                          <img
+                            src={resolveSnapshotUrl(alert.snapshot_url) as string}
+                            alt="Alert snapshot"
+                            className="w-16 h-16 rounded-md object-cover border border-border"
+                            loading="lazy"
+                          />
+                        </a>
+                      )}
                     </div>
                   </div>
                 ))
