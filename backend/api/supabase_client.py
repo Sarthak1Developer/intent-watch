@@ -77,15 +77,14 @@ def upload_file(bucket: str, storage_key: str, file_path: str, *, content_type: 
         return None
 
     try:
+        # Open the file in binary mode and pass the file object directly to Supabase.
         with open(file_path, "rb") as f:
-            data = f.read()
+            # supabase-py accepts file-like objects or bytes for upload.
+            options: dict[str, Any] = {}
+            if content_type:
+                options["content-type"] = content_type
 
-        # supabase-py accepts bytes for upload.
-        options: dict[str, Any] = {}
-        if content_type:
-            options["content-type"] = content_type
-
-        client.storage.from_(bucket).upload(storage_key, data, file_options=options or None)
+            client.storage.from_(bucket).upload(storage_key, f, file_options=options or None)
         public = client.storage.from_(bucket).get_public_url(storage_key)
         return str(public) if public else None
     except Exception:
