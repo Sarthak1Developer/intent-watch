@@ -100,6 +100,8 @@ def relabel_split(split_dir: Path) -> dict:
 
 
 def write_data_yaml(dataset_root: Path, out_path: Path) -> None:
+    # 'dataset_root' is currently unused but kept for API compatibility.
+    _ = dataset_root
     # Ultralytics expects paths relative to this yaml, so keep it simple.
     # This yaml will live under archive1/weapon_detection/
     out_path.write_text(
