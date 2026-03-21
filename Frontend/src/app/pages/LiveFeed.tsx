@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { Card } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -19,6 +20,8 @@ import { ensureNotificationPermissionNonBlocking } from '../../services/alertNot
 type ExtraCam = { id: string; source: string; name?: string };
 
 export function LiveFeed() {
+  const reduceMotion = useReducedMotion();
+
   const [isStreaming, setIsStreaming] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -756,41 +759,50 @@ export function LiveFeed() {
                   <p className="text-slate-500 text-xs mt-1">Start the stream to detect events</p>
                 </div>
               ) : (
-                alerts.map((alert, index) => (
-                  <div key={index} className="p-3 bg-muted/50 rounded-lg border border-border">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-start gap-2">
-                        <AlertTriangle className={`w-4 h-4 mt-0.5 ${getSeverityColor(alert.type)}`} />
-                        <div>
-                          <p className="text-foreground text-sm font-medium">{alert.type}</p>
-                          <p className="text-muted-foreground text-xs mt-1">{alert.message}</p>
-                          {getSavedCameraNameForAlert(alert.camera) && (
-                            <p className="text-muted-foreground text-xs mt-1">
-                              Camera: {getSavedCameraNameForAlert(alert.camera)}
-                            </p>
-                          )}
-                          <p className="text-muted-foreground text-xs mt-1">{alert.time}</p>
+                <AnimatePresence initial={false}>
+                  {alerts.map((alert, index) => (
+                    <motion.div
+                      key={index}
+                      initial={reduceMotion ? false : { opacity: 0, y: 6, scale: 0.98 }}
+                      animate={reduceMotion ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
+                      exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -6, scale: 0.98 }}
+                      transition={reduceMotion ? { duration: 0 } : { duration: 0.18, ease: 'easeOut' }}
+                      className="p-3 bg-muted/50 rounded-lg border border-border"
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-start gap-2">
+                          <AlertTriangle className={`w-4 h-4 mt-0.5 ${getSeverityColor(alert.type)}`} />
+                          <div>
+                            <p className="text-foreground text-sm font-medium">{alert.type}</p>
+                            <p className="text-muted-foreground text-xs mt-1">{alert.message}</p>
+                            {getSavedCameraNameForAlert(alert.camera) && (
+                              <p className="text-muted-foreground text-xs mt-1">
+                                Camera: {getSavedCameraNameForAlert(alert.camera)}
+                              </p>
+                            )}
+                            <p className="text-muted-foreground text-xs mt-1">{alert.time}</p>
+                          </div>
                         </div>
+                        {resolveSnapshotUrl(alert.snapshot_url) && (
+                          <a
+                            href={resolveSnapshotUrl(alert.snapshot_url) as string}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="shrink-0"
+                            title="Open snapshot"
+                          >
+                            <img
+                              src={resolveSnapshotUrl(alert.snapshot_url) as string}
+                              alt="Alert snapshot"
+                              className="w-16 h-16 rounded-md object-cover border border-border"
+                              loading="lazy"
+                            />
+                          </a>
+                        )}
                       </div>
-                      {resolveSnapshotUrl(alert.snapshot_url) && (
-                        <a
-                          href={resolveSnapshotUrl(alert.snapshot_url) as string}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="shrink-0"
-                          title="Open snapshot"
-                        >
-                          <img
-                            src={resolveSnapshotUrl(alert.snapshot_url) as string}
-                            alt="Alert snapshot"
-                            className="w-16 h-16 rounded-md object-cover border border-border"
-                            loading="lazy"
-                          />
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                ))
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
               )}
             </div>
           </Card>
