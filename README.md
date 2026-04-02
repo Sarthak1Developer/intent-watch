@@ -1,6 +1,6 @@
 # IntentWatch AI Surveillance System
 
-A real--time AI-powered CCTV surveillance system with intent detection capabilities.
+A real-time AI-powered CCTV surveillance system with intent detection capabilities.
 
 ## Features
 
