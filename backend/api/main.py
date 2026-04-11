@@ -19,6 +19,15 @@ try:  # pragma: no cover
 except Exception:
     pass
 
+# Torch compatibility: ensure Ultralytics checkpoints load in environments
+# where torch defaults to weights-only loading.
+try:  # pragma: no cover
+    from api.torch_compat import apply_torch_load_weights_only_default_false
+
+    apply_torch_load_weights_only_default_false()
+except Exception:
+    pass
+
 from api.routes import video, alerts, metrics, history, iot, ask, demo
 
 
