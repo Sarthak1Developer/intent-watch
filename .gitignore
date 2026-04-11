@@ -66,6 +66,10 @@ logs/
 /Dataset/
 /demo_test.jpg
 
+# Local-only docs (do not commit)
+/deploy/
+/paper/
+
 # Local model weights copied into workspace root (backend has its own)
 /yolov8n.pt
 /yolov8s.pt
