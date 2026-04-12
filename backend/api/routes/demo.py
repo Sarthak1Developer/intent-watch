@@ -39,6 +39,8 @@ def warmup():
 
     try:
         return warmup_demo_model(imgsz=int(os.getenv("INTENTWATCH_DEMO_IMG_SIZE") or 640))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Warmup failed: {e}")
 

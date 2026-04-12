@@ -6,6 +6,7 @@ import { Label } from '../components/ui/label';
 import { Slider } from '../components/ui/slider';
 import { Switch } from '../components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { iotAPI } from '../../services/api';
 
 type CameraSource = 'webcam' | 'video_file' | 'rtsp';
 type Resolution = '640x480' | '1280x720' | '1920x1080';
@@ -29,6 +30,9 @@ type SettingsState = {
   // Alert Settings
   sound: boolean;
   alertLogging: boolean;
+  iotActiveStart: string;
+  iotActiveEnd: string;
+  iotSharedSecret: string;
 };
 
 export function Settings() {
@@ -51,6 +55,9 @@ export function Settings() {
 
       sound: true,
       alertLogging: true,
+      iotActiveStart: '22:00',
+      iotActiveEnd: '06:00',
+      iotSharedSecret: '',
     }),
     [],
   );
@@ -88,6 +95,10 @@ export function Settings() {
         if (typeof parsed.sound === 'boolean') next.sound = parsed.sound;
         if (typeof parsed.alertLogging === 'boolean') next.alertLogging = parsed.alertLogging;
 
+        if (typeof parsed.iotActiveStart === 'string') next.iotActiveStart = parsed.iotActiveStart;
+        if (typeof parsed.iotActiveEnd === 'string') next.iotActiveEnd = parsed.iotActiveEnd;
+        if (typeof parsed.iotSharedSecret === 'string') next.iotSharedSecret = parsed.iotSharedSecret;
+
         return next;
       });
     } catch {
@@ -113,11 +124,23 @@ export function Settings() {
     }
   };
 
-  const save = () => {
+  const [saveStatus, setSaveStatus] = useState<string>('');
+
+  const save = async () => {
     try {
+      setSaveStatus('Saving…');
       window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-    } catch {
-      // ignore
+
+      await iotAPI.updateActiveWindow(settings.iotActiveStart, settings.iotActiveEnd, {
+        secret: settings.iotSharedSecret,
+      });
+
+      setSaveStatus('Saved');
+      window.setTimeout(() => setSaveStatus(''), 1500);
+    } catch (err: any) {
+      const msg = String(err?.message || 'Failed to save');
+      setSaveStatus(msg);
+      window.setTimeout(() => setSaveStatus(''), 2500);
     }
   };
 
@@ -255,7 +278,7 @@ export function Settings() {
         {/* Alert Settings */}
         <Card className="p-6">
           <h2 className="text-lg font-semibold text-foreground">Alert Settings</h2>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-foreground">Sound toggle</span>
               <Switch checked={settings.sound} onCheckedChange={(v) => update('sound', Boolean(v))} />
@@ -264,12 +287,49 @@ export function Settings() {
               <span className="text-sm text-foreground">Alert logging toggle</span>
               <Switch checked={settings.alertLogging} onCheckedChange={(v) => update('alertLogging', Boolean(v))} />
             </div>
+
+            <div className="pt-2">
+              <Label className="text-muted-foreground">IoT active window</Label>
+              <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Input
+                    type="time"
+                    value={settings.iotActiveStart}
+                    onChange={(e) => update('iotActiveStart', e.target.value)}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">Start time</p>
+                </div>
+                <div>
+                  <Input
+                    type="time"
+                    value={settings.iotActiveEnd}
+                    onChange={(e) => update('iotActiveEnd', e.target.value)}
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">End time</p>
+                </div>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Set the hours when the door sensor should trigger alerts.
+              </p>
+            </div>
+
+            <div>
+              <Label className="text-muted-foreground">IoT shared secret (optional)</Label>
+              <Input
+                type="password"
+                value={settings.iotSharedSecret}
+                onChange={(e) => update('iotSharedSecret', e.target.value)}
+                className="mt-1"
+                placeholder="Same as INTENTWATCH_IOT_SHARED_SECRET"
+              />
+            </div>
           </div>
         </Card>
 
       </div>
 
       <div className="flex justify-end gap-3">
+        {saveStatus && <div className="text-sm text-muted-foreground self-center">{saveStatus}</div>}
         <Button onClick={reset} variant="destructive" className="bg-red-600 hover:bg-red-700">
           Reset
         </Button>

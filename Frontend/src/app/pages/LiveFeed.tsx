@@ -289,10 +289,11 @@ export function LiveFeed() {
         setPrimaryMode('camera');
       }
     } catch (e: any) {
+      const msg = String(e?.message || 'Failed to start/stop stream');
       if (isMountedRef.current) {
-        setError(e?.message || 'Failed to start/stop stream');
+        setError(msg);
       }
-      alert('Failed to start/stop stream. Make sure the backend is running on http://localhost:8000');
+      alert(msg);
     } finally {
       if (isMountedRef.current) setIsLoading(false);
     }

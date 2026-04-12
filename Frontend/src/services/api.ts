@@ -70,6 +70,16 @@ export interface DemoWarmupResponse {
   warmup_ms?: number;
 }
 
+async function readErrorDetail(response: Response): Promise<string> {
+  try {
+    const data = await response.json();
+    const detail = (data as any)?.detail;
+    return detail ? String(detail) : '';
+  } catch {
+    return '';
+  }
+}
+
 // Video API
 export const videoAPI = {
   // Upload video file
@@ -83,7 +93,8 @@ export const videoAPI = {
     });
     
     if (!response.ok) {
-      throw new Error('Failed to upload video');
+      const detail = await readErrorDetail(response);
+      throw new Error(detail || 'Failed to upload video');
     }
     
     return response.json();
@@ -100,7 +111,8 @@ export const videoAPI = {
     });
     
     if (!response.ok) {
-      throw new Error('Failed to start video');
+      const detail = await readErrorDetail(response);
+      throw new Error(detail || 'Failed to start video');
     }
     
     return response.json();
@@ -114,7 +126,8 @@ export const videoAPI = {
     });
     
     if (!response.ok) {
-      throw new Error('Failed to stop video');
+      const detail = await readErrorDetail(response);
+      throw new Error(detail || 'Failed to stop video');
     }
     
     return response.json();
@@ -140,7 +153,8 @@ export const videoAPI = {
     });
     
     if (!response.ok) {
-      throw new Error('Failed to start webcam');
+      const detail = await readErrorDetail(response);
+      throw new Error(detail || 'Failed to start webcam');
     }
     
     return response.json();
@@ -300,6 +314,43 @@ export const systemAPI = {
     if (!response.ok) {
       throw new Error('Failed to fetch metrics');
     }
+    return response.json();
+  },
+};
+
+// IoT API
+export const iotAPI = {
+  async updateActiveWindow(
+    activeStart: string | null | undefined,
+    activeEnd: string | null | undefined,
+    options?: { secret?: string | null }
+  ): Promise<any> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    const secret = String(options?.secret ?? '').trim();
+    if (secret) headers['X-IoT-Key'] = secret;
+
+    const response = await fetch(`${API_BASE_URL}/iot/config`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        active_start: activeStart || null,
+        active_end: activeEnd || null,
+      }),
+    });
+
+    if (!response.ok) {
+      let detail = '';
+      try {
+        const data = await response.json();
+        detail = String((data as any)?.detail ?? '');
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || 'Failed to update IoT active window');
+    }
+
     return response.json();
   },
 };

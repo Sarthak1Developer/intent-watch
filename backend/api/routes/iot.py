@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, time
 import os
+import threading
 from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException
@@ -10,6 +11,10 @@ from pydantic import BaseModel, Field
 from api.routes.alerts import add_alert
 
 router = APIRouter()
+
+_override_lock = threading.Lock()
+_override_active_start: time | None = None
+_override_active_end: time | None = None
 
 
 def _parse_hhmm(value: str | None) -> time | None:
@@ -39,8 +44,13 @@ def _within_active_window(now: datetime) -> bool:
     If either is missing/invalid, defaults to "always active".
     """
 
-    start = _parse_hhmm(os.getenv("INTENTWATCH_IOT_ACTIVE_START"))
-    end = _parse_hhmm(os.getenv("INTENTWATCH_IOT_ACTIVE_END"))
+    with _override_lock:
+        start = _override_active_start
+        end = _override_active_end
+
+    if start is None or end is None:
+        start = _parse_hhmm(os.getenv("INTENTWATCH_IOT_ACTIVE_START"))
+        end = _parse_hhmm(os.getenv("INTENTWATCH_IOT_ACTIVE_END"))
 
     if start is None or end is None:
         return True
@@ -77,6 +87,11 @@ class DoorEventIn(BaseModel):
     battery_v: float | None = None
     rssi: int | None = None
     ts: str | None = None  # device timestamp (best-effort)
+
+
+class IoTActiveWindowIn(BaseModel):
+    active_start: str | None = None  # HH:MM
+    active_end: str | None = None  # HH:MM
 
 
 @router.get("/ping")
@@ -121,4 +136,42 @@ def door_event(
         "received_at": now.isoformat(timespec="seconds"),
         "device_id": device_id,
         "state": body.state,
+    }
+
+
+@router.get("/config")
+def get_config():
+    with _override_lock:
+        start = _override_active_start
+        end = _override_active_end
+
+    return {
+        "active_start": start.strftime("%H:%M") if start else None,
+        "active_end": end.strftime("%H:%M") if end else None,
+    }
+
+
+@router.post("/config")
+def update_config(
+    body: IoTActiveWindowIn,
+    x_intentwatch_key: str | None = Header(default=None),
+    x_iot_key: str | None = Header(default=None),
+):
+    _require_shared_secret(x_intentwatch_key or x_iot_key)
+
+    start = _parse_hhmm(body.active_start)
+    end = _parse_hhmm(body.active_end)
+
+    # If either value is missing/invalid, clear overrides (fallback to env vars).
+    if (body.active_start and start is None) or (body.active_end and end is None):
+        raise HTTPException(status_code=400, detail="Invalid active window (expected HH:MM)")
+
+    with _override_lock:
+        _override_active_start = start
+        _override_active_end = end
+
+    return {
+        "ok": True,
+        "active_start": start.strftime("%H:%M") if start else None,
+        "active_end": end.strftime("%H:%M") if end else None,
     }

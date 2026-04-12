@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import uuid
+import json
 
 from api.phone_notify import notify_async
 
@@ -15,6 +16,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]  # .../backend
 SNAP_DIR = BACKEND_DIR / "data" / "snaps"
 SNAP_DIR.mkdir(parents=True, exist_ok=True)
 
+ALERTS_DIR = BACKEND_DIR / "data" / "alerts"
+ALERTS_DIR.mkdir(parents=True, exist_ok=True)
+ALERTS_PATH = ALERTS_DIR / "alerts.jsonl"
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 alerts = []
@@ -23,6 +28,37 @@ alerts_lock = threading.Lock()
 # Keep the alert store bounded so /alerts/live stays fast.
 MAX_ALERTS_STORED = 2000
 MAX_ALERTS_LIVE_RESPONSE = 200
+
+
+def _load_alerts_from_disk() -> None:
+    if not ALERTS_PATH.exists():
+        return
+    loaded: list[dict] = []
+    try:
+        for line in ALERTS_PATH.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                loaded.append(json.loads(line))
+            except Exception:
+                continue
+    except Exception:
+        return
+
+    if not loaded:
+        return
+
+    # Keep only the newest entries.
+    if len(loaded) > MAX_ALERTS_STORED:
+        loaded = loaded[-MAX_ALERTS_STORED:]
+
+    with alerts_lock:
+        alerts.clear()
+        alerts.extend(loaded)
+
+
+_load_alerts_from_disk()
 
 def add_alert(
     alert_type,
@@ -51,6 +87,13 @@ def add_alert(
         if len(alerts) > MAX_ALERTS_STORED:
             # Drop oldest alerts to keep memory bounded.
             del alerts[: len(alerts) - MAX_ALERTS_STORED]
+
+    # Persist to disk (best-effort).
+    try:
+        with ALERTS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
     print(f"[ALERT] {alert_type}: {message}")
 
     # Best-effort, non-blocking phone notifications.
@@ -100,6 +143,10 @@ def clear_all_alerts():
     global alerts
     with alerts_lock:
         alerts = []
+    try:
+        ALERTS_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 @router.get("/live")
 def get_alerts():
@@ -213,5 +260,9 @@ def clear_alerts():
     global alerts
     with alerts_lock:
         alerts = []
+    try:
+        ALERTS_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
     print("✓ Alerts cleared")
     return {"message": "Alerts cleared"}

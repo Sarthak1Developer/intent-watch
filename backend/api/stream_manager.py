@@ -422,6 +422,21 @@ class StreamWorker:
             self.BAG_MISSING_GRACE_SECONDS = 1.0
         self.RUNNING_SPEED_THRESHOLD = 120
 
+        # Bag detection reliability:
+        # Run a bag-only, lower-confidence pass when the main detector finds no bags.
+        # This helps detect suitcases/handbags that are often low-confidence at distance.
+        try:
+            self._bag_conf = float(os.getenv("INTENTWATCH_BAG_CONF", "0.20"))
+        except Exception:
+            self._bag_conf = 0.20
+        if self._bag_conf < 0.0:
+            self._bag_conf = 0.0
+        try:
+            self._bag_infer_every_n_frames = int(os.getenv("INTENTWATCH_BAG_INFER_EVERY_N_FRAMES", "2"))
+        except Exception:
+            self._bag_infer_every_n_frames = 2
+        self._bag_infer_every_n_frames = max(1, int(self._bag_infer_every_n_frames))
+
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
@@ -1089,6 +1104,15 @@ class StreamWorker:
                         main_names = {int(k): str(v) for k, v in n.items()}
                 except Exception:
                     main_names = {}
+
+                bag_labels = {"backpack", "handbag", "suitcase", "bag"}
+                bag_class_ids = sorted(
+                    {
+                        int(cls_id)
+                        for cls_id, name in (main_names or {}).items()
+                        if str(name).strip().lower() in bag_labels
+                    }
+                )
                 for r in results:
                     for box in r.boxes:
                         cls = int(box.cls[0])
@@ -1105,7 +1129,48 @@ class StreamWorker:
                             weapons.append((x1, y1, x2, y2, label))
 
                         # Draw common objects
-                        if label in {"backpack", "handbag", "suitcase", "bag"}:
+                        if label in bag_labels:
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                # If main inference didn't find any bags, run a lightweight bag-only pass at lower confidence.
+                # This is intentionally gated by frame_index for performance.
+                if (
+                    (not bags)
+                    and bag_class_ids
+                    and (self._bag_conf > 0.0)
+                    and (self._bag_conf < float(self._conf))
+                    and ((frame_index % self._bag_infer_every_n_frames) == 0)
+                ):
+                    try:
+                        bag_results = model(
+                            frame_infer,
+                            conf=float(self._bag_conf),
+                            imgsz=self._infer_imgsz,
+                            half=self._infer_half,
+                            verbose=False,
+                            classes=bag_class_ids,
+                        )
+                    except TypeError:
+                        # Older Ultralytics versions may not support the `classes` kwarg.
+                        bag_results = model(
+                            frame_infer,
+                            conf=float(self._bag_conf),
+                            imgsz=self._infer_imgsz,
+                            half=self._infer_half,
+                            verbose=False,
+                        )
+                    except Exception:
+                        bag_results = []
+
+                    for br in bag_results or []:
+                        for box in br.boxes:
+                            cls = int(box.cls[0])
+                            label = str(main_names.get(cls, cls))
+                            if str(label).strip().lower() not in bag_labels:
+                                continue
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            bags.append((x1, y1, x2, y2))
                             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             cv2.putText(frame, label, (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
@@ -1122,6 +1187,14 @@ class StreamWorker:
                             weapon_names = {int(k): str(v) for k, v in wn.items()}
                     except Exception:
                         weapon_names = {}
+                    weapon_allowlist = self._weapon_labels_allowlist
+                    if weapon_allowlist is not None and weapon_names:
+                        labels_norm = {str(v).strip().lower() for v in weapon_names.values()}
+                        label_aliases = {_weapon_alias(l) for l in labels_norm}
+                        if not (labels_norm | label_aliases).intersection(weapon_allowlist):
+                            # If none of the model's labels match the configured allowlist,
+                            # allow all labels so we don't silently drop real detections.
+                            weapon_allowlist = None
                     run_weapon = (frame_index % self._weapon_infer_every_n_frames) == 0
                     weapon_infer_ran = bool(run_weapon)
                     weapon_results = (
@@ -1160,9 +1233,9 @@ class StreamWorker:
                             # If an allowlist is explicitly configured, enforce it.
                             # Otherwise, treat all non-placeholder labels as "weapon" candidates and
                             # rely on verification (if configured) to suppress false positives.
-                            if self._weapon_labels_allowlist is not None:
-                                if (label_norm not in self._weapon_labels_allowlist) and (
-                                    label_alias not in self._weapon_labels_allowlist
+                            if weapon_allowlist is not None:
+                                if (label_norm not in weapon_allowlist) and (
+                                    label_alias not in weapon_allowlist
                                 ):
                                     continue
 
@@ -1778,7 +1851,7 @@ class StreamWorker:
                                 self._emit_alert(
                                     add_alert,
                                     "Zone",  # keep type stable
-                                    f"{z.name}: person detected in zone",
+                                    f"{z.name}: person detected in unrestricted zone",
                                     cooldown_s=self._zone_cooldown_s,
                                     severity=sev,
                                     snapshot_provider=_zone_snapshot,
@@ -1937,6 +2010,8 @@ class StreamManager:
                 self._weapon_labels_allowlist = {s.strip().lower() for s in labels_raw.split(",") if s.strip()}
 
         # Performance and alert tuning
+        # Main detector confidence (COCO model). Lower values detect smaller objects but increase false positives.
+        self._main_conf = _env_float("INTENTWATCH_MAIN_CONF", 0.35)
         # Keep inference image size fixed at 640 for consistent behavior/accuracy.
         # (Do not allow overriding via env var.)
         self._infer_imgsz = 640
@@ -2002,6 +2077,7 @@ class StreamManager:
                 self._weapon_model_holder,
                 self._weapon_verify_model_holder,
                 self._weapon_fallback_model_holder,
+                conf=self._main_conf,
                 weapon_conf=self._weapon_conf,
                 weapon_knife_conf=self._weapon_knife_conf,
                 weapon_persist_frames=self._weapon_persist_frames,
@@ -2078,6 +2154,7 @@ class StreamManager:
                 self._weapon_model_holder,
                 self._weapon_verify_model_holder,
                 self._weapon_fallback_model_holder,
+                conf=self._main_conf,
                 weapon_conf=self._weapon_conf,
                 weapon_knife_conf=self._weapon_knife_conf,
                 weapon_persist_frames=self._weapon_persist_frames,

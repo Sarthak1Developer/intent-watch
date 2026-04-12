@@ -244,5 +244,18 @@ def answer_question(alerts: list[dict], question: str, *, k: int = 5) -> tuple[s
 
         sources = _retrieve(q, k=k)
 
+        # If retrieval found nothing but we do have alerts, fall back to the most recent
+        # items from the provided alerts list (not just the index).
+        if not sources and alerts:
+            tail_alerts = alerts[-max(1, min(int(k), len(alerts))):]
+            recent_sources: list[RagSource] = []
+            for a in reversed(tail_alerts):
+                try:
+                    _doc, src = _format_alert_doc(a)
+                    recent_sources.append(src)
+                except Exception:
+                    continue
+            sources = recent_sources
+
     answer = _generate_answer(q, sources)
     return (answer, sources)

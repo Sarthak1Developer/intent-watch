@@ -7,7 +7,7 @@ import {
   Clock,
   Activity
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { mockStats, generateActivityData, generateAlertDistribution, generateMockAlerts } from '../data/mockData';
 import { Badge } from '../components/ui/badge';
@@ -44,6 +44,8 @@ export function Dashboard() {
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoError, setDemoError] = useState<string | null>(null);
   const [demoResult, setDemoResult] = useState<DemoDetectImageResponse | null>(null);
+
+  const demoFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [askQuestion, setAskQuestion] = useState('');
   const [askAnswer, setAskAnswer] = useState<string>('');
@@ -128,9 +130,21 @@ export function Dashboard() {
     const backend = analytics?.recent;
     if (!backend || backend.length === 0) return generateMockAlerts(5);
 
+    const normalizeBackendSeverity = (raw: any): 'critical' | 'high' | 'medium' | 'low' | null => {
+      const s = String(raw ?? '').trim().toLowerCase();
+      if (!s) return null;
+      if (s === 'critical') return 'critical';
+      if (s === 'high') return 'high';
+      if (s === 'medium') return 'medium';
+      if (s === 'low') return 'low';
+      return null;
+    };
+
     const severityFromType = (t: string): 'critical' | 'high' | 'medium' | 'low' => {
       const s = (t || '').toLowerCase();
+      if (s.includes('weapon')) return 'critical';
       if (s.includes('bag')) return 'high';
+      if (s.includes('zone')) return 'high';
       if (s.includes('loiter')) return 'medium';
       if (s.includes('running')) return 'low';
       return 'low';
@@ -143,7 +157,7 @@ export function Dashboard() {
         id: `backend-${idx}-${a.timestamp ?? a.time}`,
         timestamp: a.timestamp ?? new Date().toISOString(),
         type: a.type,
-        severity: severityFromType(a.type),
+        severity: normalizeBackendSeverity((a as any)?.severity) ?? severityFromType(a.type),
         description: a.message,
         location: '—',
         camera: '—',
@@ -291,35 +305,42 @@ export function Dashboard() {
         <h3 className="text-lg font-semibold text-foreground mb-4">Demo: Upload Image</h3>
 
         <div className="flex flex-col md:flex-row gap-3">
-          <Input
+          <input
+            ref={demoFileInputRef}
             type="file"
             accept="image/*"
-            onChange={(e: any) => {
-              const f = (e?.target?.files && e.target.files[0]) || null;
+            className="hidden"
+            onChange={(e) => {
+              const f = (e.currentTarget.files && e.currentTarget.files[0]) || null;
+              // allow picking the same file again
+              e.currentTarget.value = '';
+              if (!f) return;
+
               setDemoFile(f);
               setDemoError(null);
               setDemoResult(null);
-            }}
-          />
-          <Button
-            disabled={demoLoading || !demoFile}
-            onClick={() => {
+
               void (async () => {
-                if (!demoFile) return;
                 setDemoLoading(true);
-                setDemoError(null);
                 try {
-                  const res = await demoAPI.detectImage(demoFile, { stream_id: 'demo', emit_alert: true });
+                  const res = await demoAPI.detectImage(f, { stream_id: 'demo', emit_alert: true });
                   setDemoResult(res);
-                } catch (e: any) {
-                  setDemoError(e?.message || 'Demo detection failed');
+                } catch (err: any) {
+                  setDemoError(err?.message || 'Demo detection failed');
                 } finally {
                   setDemoLoading(false);
                 }
               })();
             }}
+          />
+          <Button
+            disabled={demoLoading}
+            onClick={() => {
+              // If a file was already selected, let the user pick a new one.
+              demoFileInputRef.current?.click();
+            }}
           >
-            {demoLoading ? 'Running…' : 'Upload Image'}
+            {demoLoading ? 'Running…' : (demoFile ? 'Upload Another Image' : 'Upload Image')}
           </Button>
         </div>
 
@@ -329,7 +350,7 @@ export function Dashboard() {
           <div className="mt-4 space-y-3">
             {demoResult.snapshot_url && (
               <a
-                href={resolveSnapshotUrl(demoResult.snapshot_url)}
+                href={resolveSnapshotUrl(demoResult.snapshot_url) || undefined}
                 target="_blank"
                 rel="noreferrer"
                 className="block rounded border border-border overflow-hidden bg-black"

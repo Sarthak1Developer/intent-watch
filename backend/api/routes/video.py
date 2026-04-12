@@ -76,6 +76,10 @@ def _weapon_model_candidates() -> list[Path]:
     # Ultralytics CLI often writes under: runs/detect/<project>/<name>/weights/best.pt
     candidates.extend(
         [
+            # Models that exist in this workspace (preferred)
+            WORKSPACE_DIR / "runs_weapon" / "weapon_types_img800_e60" / "weights" / "best.pt",
+            WORKSPACE_DIR / "runs_weapon" / "weapon_types_img800_e60_noamp" / "weights" / "best.pt",
+
             # Existing trained models used in this workspace
             WORKSPACE_DIR
             / "runs"

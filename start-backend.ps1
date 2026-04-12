@@ -38,6 +38,12 @@ $BackendHost = if ($env:INTENTWATCH_BACKEND_HOST) { $env:INTENTWATCH_BACKEND_HOS
 Write-Host "Starting FastAPI server on http://$BackendHost`:$BackendPort..." -ForegroundColor Green
 Write-Host ""
 
+# CORS (dev convenience): Vite may auto-pick a different port if 5173 is busy.
+# If no regex is configured, allow any localhost/127.0.0.1 origin with any port.
+if (-not $env:INTENTWATCH_CORS_ORIGIN_REGEX) {
+    $env:INTENTWATCH_CORS_ORIGIN_REGEX = '^https?://(localhost|127\\.0\\.0\\.1)(:\\d+)?$'
+}
+
 # Optional: auto-wire trained weapon model if present.
 if ($env:INTENTWATCH_WEAPON_MODEL_PATH) {
     # If user set a path but it doesn't exist, treat it as unset.
@@ -49,6 +55,10 @@ if ($env:INTENTWATCH_WEAPON_MODEL_PATH) {
 
 if (-Not $env:INTENTWATCH_WEAPON_MODEL_PATH) {
     $WeaponCandidates = @(
+        # Preferred weapon-type models in this workspace
+        (Join-Path $PSScriptRoot "runs_weapon\weapon_types_img800_e60\weights\best.pt"),
+        (Join-Path $PSScriptRoot "runs_weapon\weapon_types_img800_e60_noamp\weights\best.pt"),
+
         # Existing trained model in this workspace
         (Join-Path $PSScriptRoot "runs\detect\runs_weapon\combined_yolov8s_gpu\weights\best.pt"),
         (Join-Path $PSScriptRoot "runs\detect\runs_weapon\combined_ft_from_archive1_best\weights\best.pt"),

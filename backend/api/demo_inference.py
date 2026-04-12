@@ -138,6 +138,30 @@ def get_demo_model() -> tuple[object, DemoModelInfo]:
 def warmup_demo_model(*, imgsz: int = 640, conf: float = 0.25) -> dict:
     model, info = get_demo_model()
 
+    torch_version = None
+    cuda_available = None
+    cuda_device_name = None
+    try:
+        import torch
+
+        torch_version = getattr(torch, "__version__", None)
+        cuda_available = bool(torch.cuda.is_available())
+        if cuda_available:
+            try:
+                cuda_device_name = torch.cuda.get_device_name(0)
+            except Exception:
+                cuda_device_name = None
+    except Exception:
+        pass
+
+    ultralytics_version = None
+    try:
+        import ultralytics
+
+        ultralytics_version = getattr(ultralytics, "__version__", None)
+    except Exception:
+        pass
+
     # Small dummy image warmup (helps first-run latency on GPU).
     dummy = np.zeros((imgsz, imgsz, 3), dtype=np.uint8)
     t0 = time.perf_counter()
@@ -149,4 +173,8 @@ def warmup_demo_model(*, imgsz: int = 640, conf: float = 0.25) -> dict:
         "model_path": info.model_path,
         "device": info.device,
         "warmup_ms": round(dt_ms, 2),
+        "torch_version": torch_version,
+        "cuda_available": cuda_available,
+        "cuda_device_name": cuda_device_name,
+        "ultralytics_version": ultralytics_version,
     }
